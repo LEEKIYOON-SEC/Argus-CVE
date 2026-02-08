@@ -19,14 +19,22 @@ def _shorten(text: str, max_len: int = 900) -> str:
 
 
 def _rule_snippet(rule_text: str, max_chars: int = 1200) -> str:
-    """
-    Slack에서 바로 복붙 가능한 수준을 유지하되,
-    과도한 길이 폭발을 막기 위해 상한을 둔다.
-    """
     t = (rule_text or "").strip()
     if len(t) <= max_chars:
         return t
     return t[:max_chars] + "\n…(truncated)"
+
+
+def _engine_registration_guidance() -> str:
+    # “등록 방식이 다르다” 요구 반영: 짧고 실용적으로
+    return (
+        "*룰 엔진/등록 가이드(요약)*\n"
+        "- `suricata`: suricata.yaml의 rule-files에 추가 또는 `-S <rules>` 로드\n"
+        "- `snort2`: snort.conf에 `include <rules>` 후 `snort -T -c snort.conf`로 검증\n"
+        "- `snort3`: snort.lua 기반, `-R <rules>` 로드 후 `snort -T -c snort.lua -R rules` 검증\n"
+        "- `sigma`: SIEM/EDR 변환(예: sigma-cli). `sigma validate`로 문법 검증\n"
+        "- `yara`: 호스트/파일 스캔. `yara -C rule.yar`로 컴파일 검증\n"
+    )
 
 
 def format_slack_message(
@@ -38,13 +46,8 @@ def format_slack_message(
     report_link: str,
     top_validated_rules: Optional[Sequence[dict]] = None,
     include_rule_blocks_max: int = 3,
+    rules_zip_present: bool = False,
 ) -> str:
-    """
-    Slack 길이 폭발 방지:
-    - 핵심 필드/판정/링크 중심
-    - 룰은 (검증 PASS) 상위 N개만 “복붙 가능 블록”으로 포함
-    - 나머지 룰 전체는 Report + rules.zip로 제공
-    """
     cve_id = cve["cve_id"]
     cvss_score = cve.get("cvss_score")
     cvss_sev = ko_severity(cve.get("cvss_severity") or "")
@@ -68,7 +71,7 @@ def format_slack_message(
     if alert_type == "NEW_CVE_PUBLISHED":
         title = "🆕 신규 CVE(PUBLISHED)"
     elif alert_type == "UPDATE_ESCALATION":
-        title = "🚨 승격/재알림(위험도 상승)"
+        title = "🚨 승격/재알림(갱신/위험도 변화)"
     else:
         title = "⚠️ 고위험 알림"
 
@@ -93,7 +96,6 @@ def format_slack_message(
         lines.append("\n*참고(상위 일부)*")
         lines.append(refs_str)
 
-    # 룰 블록(복붙 가능) — 검증 PASS 상위 N개만
     rule_items = list(top_validated_rules or [])
     if rule_items:
         lines.append(f"\n*검증 통과 룰(복붙 가능, 상위 {min(include_rule_blocks_max, len(rule_items))}개)*")
@@ -109,8 +111,12 @@ def format_slack_message(
         if len(rule_items) > include_rule_blocks_max:
             lines.append(f"_나머지 {len(rule_items)-include_rule_blocks_max}개 검증 통과 룰은 Report 및 rules.zip에서 확인하세요._")
 
+    lines.append("\n" + _engine_registration_guidance().strip())
+
     lines.append("\n*상세 리포트(30일 링크)*")
     lines.append(report_link)
+    if rules_zip_present:
+        lines.append("_리포트에는 rules.zip(검증 PASS 룰 전체 번들)도 함께 저장됩니다._")
 
-    lines.append("\n_참고: AI 모델은 웹검색 불가 전제이며, 리포트에 근거(Evidence Bundle)를 누적 구성합니다._")
+    lines.append("\n_참고: AI 모델은 웹검색 불가 전제이며, Report의 Evidence Bundle 텍스트가 AI 입력 근거입니다._")
     return "\n".join(lines)

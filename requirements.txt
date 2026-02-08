@@ -6,13 +6,10 @@ cachetools
 beautifulsoup4
 lxml
 PyYAML
-
-# Supabase
+pypdf
 supabase
 postgrest
 gotrue
 storage3
 httpx
-
-# Sigma rule validation (pin)
 sigma-cli

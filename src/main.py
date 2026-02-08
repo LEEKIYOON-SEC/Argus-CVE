@@ -27,7 +27,11 @@ from .evidence_bundle import build_evidence_bundle_text
 from .ai_rules import generate_ai_rules
 
 from .vulncheck_intel import fetch_vulncheck_findings
-from .github_osint import search_repos_by_cve, search_code_by_cve
+from .github_osint import (
+    search_repos_by_cve,
+    search_code_by_cve,
+    enrich_code_findings_with_snippets,
+)
 
 log = get_logger("argus.main")
 
@@ -93,7 +97,7 @@ def main() -> None:
         now = _utcnow()
 
         if selftest:
-            post_slack(cfg.SLACK_WEBHOOK_URL, "🧪 Argus 셀프테스트: CVE→KEV/EPSS→OSINT→룰(공식/AI)→검증→Report/Slack")
+            post_slack(cfg.SLACK_WEBHOOK_URL, "🧪 Argus 셀프테스트: CVE→KEV/EPSS→OSINT(snippet)→룰(공식/AI)→검증→Report/Slack")
 
         # 1) CVE.org PUBLISHED 신규 수집
         cves = fetch_cveorg_published_since(since, until=now)
@@ -118,10 +122,11 @@ def main() -> None:
                 prev_cmp = dict(prev)
                 prev_cmp["references"] = cve.get("references") or []
 
+            # 3) 위험/정책 기반 notify
             notify, reason = should_notify(cfg, cve, prev_cmp)
             change_kind = classify_change(prev_cmp, cve) if prev_cmp else "NO_PREV"
 
-            # 3) 공식 룰 수집/검증(먼저)
+            # 4) 공식 룰 수집/검증(먼저) — 갱신 재알림 트리거 판정에 필요
             official_hits = fetch_official_rules(cfg, cve_id)
             artifacts, _, official_fp, rules_section_md = validate_and_build_bundle(
                 cfg=cfg,
@@ -134,20 +139,29 @@ def main() -> None:
             prev_rule_status = (prev.get("last_rule_status") if prev else None) or "NONE"
             prev_official_fp = (prev.get("last_official_rule_fingerprint") if prev else None) or ""
 
+            # ✅ 강화된 갱신 재알림 규칙:
+            # - 이전에 공식 룰이 없었는데(= AI_ONLY/NONE), 이번에 공식 룰이 생기면 무조건 갱신 재알림
+            # - 이전에도 공식 룰이 있었지만 fingerprint가 바뀌면(추가/삭제/수정) 갱신 재알림
             forced_rule_update = False
             if had_official_now:
-                if prev_rule_status in ("AI_ONLY", "NONE") and official_fp and official_fp != prev_official_fp:
+                if prev_rule_status in ("AI_ONLY", "NONE"):
+                    forced_rule_update = True
+                elif official_fp and prev_official_fp and official_fp != prev_official_fp:
+                    forced_rule_update = True
+                elif official_fp and (not prev_official_fp):
                     forced_rule_update = True
 
+            # notify가 아니어도, 공식 룰 갱신이면 강제 notify
             if (not notify) and forced_rule_update:
                 notify = True
-                reason = "공식/공개 룰 발견으로 갱신 재알림"
+                reason = "공식/공개 룰 변경(추가/갱신)으로 재알림"
                 change_kind = "UPDATE"
 
             if not notify:
                 db.upsert_cve_state(cve, last_seen_at=_utcnow())
                 continue
 
+            # alert_type
             if not prev:
                 alert_type = "NEW_CVE_PUBLISHED"
             elif forced_rule_update or change_kind == "ESCALATION":
@@ -155,17 +169,21 @@ def main() -> None:
             else:
                 alert_type = "HIGH_RISK"
 
-            # 4) 패치/권고 텍스트
+            # 5) 패치/권고 텍스트
             patch_findings = fetch_patch_findings_from_references(cve.get("references") or [], max_pages=4)
             patch_section_md = build_patch_section_md(patch_findings)
 
-            # 5) OSINT: VulnCheck + GitHub discovery
+            # 6) OSINT: VulnCheck + GitHub discovery + ✅ code snippet enrichment
             vulncheck_findings = fetch_vulncheck_findings(cfg, cve_id)
+
             github_findings = []
             github_findings.extend(search_repos_by_cve(cfg, cve_id, max_items=4))
             github_findings.extend(search_code_by_cve(cfg, cve_id, max_items=4))
 
-            # 6) Evidence Bundle 구성 (OSINT 포함)
+            # ✅ 핵심: code 검색 결과 상위 2개에 대해 파일 내용 일부를 가져와 evidence에 포함
+            github_findings = enrich_code_findings_with_snippets(cfg, github_findings, max_fetch=2, snippet_max_chars=3500)
+
+            # 7) Evidence Bundle (OSINT 포함)
             official_summary_lines = _summarize_official_hits(official_hits)
             evidence_text = build_evidence_bundle_text(
                 cfg=cfg,
@@ -177,7 +195,7 @@ def main() -> None:
                 ai_rule_generation_notes=None,
             )
 
-            # 7) AI 룰 생성 필요 여부
+            # 8) AI 룰 생성 필요 여부
             has_sigma_official = any(a.validated and a.engine == "sigma" for a in official_pass)
             need_ai = (not had_official_now) or (not has_sigma_official)
 
@@ -185,7 +203,7 @@ def main() -> None:
             if need_ai:
                 ai_rules = generate_ai_rules(cfg=cfg, cve=cve, evidence_bundle_text=evidence_text, prefer_snort3=False)
 
-            # 8) rules.zip: 공식 PASS + AI PASS 전부 포함
+            # 9) rules.zip: 공식 PASS + AI PASS 전부 포함
             zip_files: List[Tuple[str, bytes]] = []
             for a in official_pass:
                 zpath = f"rules/{a.engine}/{a.source}/{a.rule_path}".replace("..", "_")
@@ -212,7 +230,7 @@ def main() -> None:
 
             ai_rules_section_md = _build_ai_rules_section_md(ai_rules)
 
-            # 9) Report 생성(근거 텍스트 포함)
+            # 10) Report 생성
             report_md = build_report_markdown(
                 cve=cve,
                 alert_type=alert_type,
@@ -235,7 +253,7 @@ def main() -> None:
                 rules_zip_bytes=rules_zip_bytes,
             )
 
-            # 10) Slack: PASS 룰 일부 복붙
+            # 11) Slack: PASS 룰 일부 복붙(상위 3개)
             pass_rules_for_slack = []
             for a in official_pass:
                 pass_rules_for_slack.append(
@@ -254,10 +272,11 @@ def main() -> None:
                 report_link=report_link,
                 top_validated_rules=pass_rules_for_slack,
                 include_rule_blocks_max=3,
+                rules_zip_present=bool(rules_zip_path),
             )
             post_slack(cfg.SLACK_WEBHOOK_URL, slack_text)
 
-            # 11) 상태 저장
+            # 12) 상태 저장
             payload = {
                 "cve_id": cve_id,
                 "alert_type": alert_type,
