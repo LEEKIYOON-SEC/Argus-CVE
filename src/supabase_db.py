@@ -254,3 +254,40 @@ class SupabaseDB:
             self._delete("cve_state", params=params)
         except Exception:
             pass
+
+    def delete_cve_state_older_than_days(self, days: int) -> int:
+        """
+        cve_state에서 last_seen_at이 (now - days)보다 오래된 row 삭제.
+        반환: 시도한 삭제 건수(정확하지 않을 수 있음, best-effort)
+        """
+        try:
+            days = int(days)
+            cutoff = _utcnow() - timedelta(days=days)
+            # PostgREST: DELETE with filter
+            self._delete("cve_state", params={"last_seen_at": f"lt.{_iso(cutoff)}"})
+            return 1
+        except Exception:
+            return 0
+
+    def delete_cve_state_low_older_than_days(self, days: int, low_cvss_max: float = 3.9) -> int:
+        """
+        cve_state에서:
+          - last_seen_at < now-days
+          - AND cvss_score <= low_cvss_max
+        삭제 (테이블/컬럼 편차가 있을 수 있어 best-effort)
+        """
+        try:
+            days = int(days)
+            cutoff = _utcnow() - timedelta(days=days)
+            # PostgREST filter: multiple params are AND
+            self._delete(
+                "cve_state",
+                params={
+                    "last_seen_at": f"lt.{_iso(cutoff)}",
+                    "cvss_score": f"lte.{float(low_cvss_max)}",
+                },
+            )
+            return 1
+        except Exception:
+            # cvss_score 컬럼이 없다면 실패할 수 있음 -> 무시
+            return 0
