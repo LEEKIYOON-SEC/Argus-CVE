@@ -160,3 +160,99 @@ def store_report_and_get_link(
         pass
 
     return report_link, report_path, rules_zip_path, report_sha, (rules_sha or ""), content_hash
+
+def build_report_markdown(
+    *,
+    cve: dict,
+    alert_type: str,
+    notify_reason: str,
+    change_kind: str,
+    evidence_bundle_text: str,
+    rules_section_md: str,
+    ai_rules_section_md: str,
+    patch_section_md: str,
+) -> str:
+    """
+    Argus Report Markdown을 생성.
+    - Slack은 링크 위주로 짧게, 상세 내용/근거/룰 검증/패치 정보는 Report에 저장하는 설계
+    - Llama-4-maverick 웹검색 불가 전제를 만족하기 위해:
+      Evidence Bundle 섹션에 'AI가 본 입력 근거'를 그대로 포함(재현성/감사 가능)
+
+    NOTE:
+    - '요약 금지' 요구가 있으므로, 가능한 한 입력된 내용을 그대로 풍부하게 담는다.
+    - 단, report_store에서 저장 시 argus_report_max_bytes 상한이 적용될 수 있다.
+    """
+
+    cve_id = cve.get("cve_id") or "(unknown)"
+    summary = cve.get("summary") or cve.get("description") or ""
+    cvss = cve.get("cvss_score")
+    vector = cve.get("cvss_vector") or ""
+    epss = cve.get("epss_score")
+    kev = bool(cve.get("is_cisa_kev") or False)
+
+    attack_vector = cve.get("attack_vector") or ""
+    cwe = cve.get("cwe") or cve.get("cwe_id") or ""
+    cce = cve.get("cce") or ""
+    references = cve.get("references") or []
+
+    # references는 길어질 수 있어도 Report에는 전부 남긴다(상한은 저장 단계에서 적용)
+    ref_lines = []
+    for r in references:
+        if isinstance(r, str):
+            ref_lines.append(f"- {r}")
+        elif isinstance(r, dict):
+            url = r.get("url") or r.get("link") or ""
+            name = r.get("name") or r.get("title") or ""
+            if url and name:
+                ref_lines.append(f"- {name}: {url}")
+            elif url:
+                ref_lines.append(f"- {url}")
+
+    if not ref_lines:
+        ref_lines = ["- (none)"]
+
+    header = []
+    header.append(f"# Argus-AI-Threat Intelligence Report")
+    header.append("")
+    header.append(f"## 1) Identity")
+    header.append(f"- CVE: **{cve_id}**")
+    header.append(f"- Alert type: **{alert_type}**")
+    header.append(f"- Change kind: **{change_kind}**")
+    header.append(f"- Notify reason: {notify_reason}")
+    header.append("")
+    header.append("## 2) Risk Signals")
+    header.append(f"- CVSS: {cvss} {vector}".strip())
+    header.append(f"- EPSS: {epss}")
+    header.append(f"- CISA KEV: {kev}")
+    header.append(f"- Attack Vector: {attack_vector}")
+    header.append(f"- CWE: {cwe}")
+    header.append(f"- CCE: {cce}")
+    header.append("")
+    header.append("## 3) Description")
+    header.append(summary if summary else "(no description)")
+    header.append("")
+    header.append("## 4) References (as collected)")
+    header.extend(ref_lines)
+    header.append("")
+
+    # 섹션 결합 (각 섹션은 이미 markdown 형태라고 가정)
+    parts = []
+    parts.append("\n".join(header).strip() + "\n")
+
+    # Patch section (PDF 텍스트 추출 결과 포함 가능)
+    if patch_section_md:
+        parts.append(patch_section_md.strip() + "\n")
+
+    # Evidence bundle (AI 입력 근거 재현 가능)
+    parts.append("## 7) Evidence Bundle (LLM Input Basis)\n")
+    parts.append("```text\n" + (evidence_bundle_text or "").strip() + "\n```\n")
+
+    # Official rules validation section
+    if rules_section_md:
+        parts.append(rules_section_md.strip() + "\n")
+
+    # AI rules validation section
+    if ai_rules_section_md:
+        parts.append(ai_rules_section_md.strip() + "\n")
+
+    return "\n".join(parts).strip() + "\n"
