@@ -10,6 +10,7 @@ from .supabase_db import SupabaseDB
 from .slack import post_slack
 
 from .runtime_overrides import apply_runtime_overrides
+from .housekeeping import run_housekeeping
 
 from .cve_sources import fetch_cveorg_published_since
 from .kev_epss import enrich_with_kev_epss
@@ -119,15 +120,21 @@ def main() -> None:
 
     cfg = load_config()
 
-    # ✅ DB settings를 런타임에 cfg로 주입 (웹 UI 변경이 즉시 반영되는 핵심)
+    # ✅ DB settings를 런타임에 cfg로 주입
     apply_runtime_overrides(cfg)
 
     db = SupabaseDB(cfg.SUPABASE_URL, cfg.SUPABASE_KEY)
 
+    # ✅ pg_cron 없이 앱 내부에서 daily housekeeping
+    try:
+        run_housekeeping(cfg, db)
+    except Exception as e:
+        # housekeeping 실패가 본 작업을 막으면 안 됨
+        log.info("housekeeping failed (ignored): %s", e)
+
     selftest = os.getenv("ARGUS_SELFTEST", "").strip().lower() in ("1", "true", "yes", "y", "on")
     run_ok = False
 
-    # 운영 파라미터: cfg 우선, 없으면 env 기본
     gh_snippet_max = getattr(cfg, "ARGUS_GH_SNIPPET_FETCH_MAX", None)
     if gh_snippet_max is None:
         gh_snippet_max = _get_int_env("ARGUS_GH_SNIPPET_FETCH_MAX", 2)
@@ -344,7 +351,7 @@ def main() -> None:
 
             sent += 1
 
-        db.log_run("RUN", True, f"processed={len(cves)} sent={sent} since={since.isoformat()}")
+        db.log_run("RUN", True, f"processed={len(cves)} sent={sent}")
         run_ok = True
 
     except Exception as e:

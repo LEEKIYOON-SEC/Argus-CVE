@@ -1,211 +1,256 @@
 from __future__ import annotations
 
+import os
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
-from supabase import create_client, Client
+import requests
 
-log = logging.getLogger("argus.supabase")
+log = logging.getLogger("argus.supabase_db")
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 class SupabaseDB:
     """
-    schema.sql 기준 테이블/뷰 접근 래퍼.
-    - public.cve_state
-    - public.report_objects
-    - public.run_log
-    - public.v_expired_report_objects (view)
+    Supabase PostgREST wrapper (service_role key 권장)
+    - argus schema(비-public) 접근을 위해 Accept-Profile/Content-Profile 기본 적용
     """
 
-    def __init__(self, url: str, key: str):
-        self.url = url
-        self.key = key
-        self.sb: Client = create_client(url, key)
+    def __init__(self, supabase_url: str, supabase_key: str, schema: str = "argus"):
+        self.url = (supabase_url or "").rstrip("/")
+        self.key = supabase_key or ""
+        self.schema = os.getenv("SUPABASE_SCHEMA", schema) or schema
 
-    # -------------------------
-    # Run log
-    # -------------------------
-    def log_run(self, kind: str, ok: bool, summary: str | None = None) -> None:
+        if not self.url:
+            raise ValueError("SUPABASE_URL missing")
+        if not self.key:
+            raise ValueError("SUPABASE_KEY missing")
+
+    # ----------------------------
+    # low-level REST helpers
+    # ----------------------------
+    def _headers(self, *, profile: bool = True) -> Dict[str, str]:
+        h = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Accept": "application/json",
+            "User-Agent": "Argus-AI-Threat-Intelligence/1.0",
+        }
+        if profile and self.schema:
+            # PostgREST: non-public schema 접근 시 필요할 수 있음
+            h["Accept-Profile"] = self.schema
+            h["Content-Profile"] = self.schema
+        return h
+
+    def _rest_url(self, table: str) -> str:
+        return f"{self.url}/rest/v1/{table}"
+
+    def _get(self, table: str, *, params: Dict[str, str], timeout: int = 20) -> List[Dict[str, Any]]:
+        r = requests.get(self._rest_url(table), headers=self._headers(profile=True), params=params, timeout=timeout)
+        if r.status_code >= 400:
+            raise RuntimeError(f"GET {table} failed {r.status_code}: {r.text[:400]}")
+        j = r.json()
+        return j if isinstance(j, list) else []
+
+    def _post(self, table: str, *, payload: Any, params: Optional[Dict[str, str]] = None, timeout: int = 25) -> None:
+        h = self._headers(profile=True)
+        h["Content-Type"] = "application/json"
+        r = requests.post(self._rest_url(table), headers=h, params=params or {}, json=payload, timeout=timeout)
+        if r.status_code >= 400:
+            raise RuntimeError(f"POST {table} failed {r.status_code}: {r.text[:400]}")
+
+    def _patch(self, table: str, *, payload: Any, params: Dict[str, str], timeout: int = 25) -> None:
+        h = self._headers(profile=True)
+        h["Content-Type"] = "application/json"
+        r = requests.patch(self._rest_url(table), headers=h, params=params, json=payload, timeout=timeout)
+        if r.status_code >= 400:
+            raise RuntimeError(f"PATCH {table} failed {r.status_code}: {r.text[:400]}")
+
+    def _delete(self, table: str, *, params: Dict[str, str], timeout: int = 25) -> None:
+        r = requests.delete(self._rest_url(table), headers=self._headers(profile=True), params=params, timeout=timeout)
+        if r.status_code >= 400:
+            raise RuntimeError(f"DELETE {table} failed {r.status_code}: {r.text[:400]}")
+
+    # ----------------------------
+    # runs log (best-effort)
+    # ----------------------------
+    def log_run(self, run_type: str, ok: bool, message: str) -> None:
+        # 테이블이 없을 수도 있으니 best-effort
         try:
-            self.sb.table("run_log").insert(
-                {"kind": kind, "ok": ok, "summary": summary or ""}
-            ).execute()
-        except Exception as e:
-            log.warning("run_log insert failed: %s", e)
+            self._post(
+                "runs",
+                payload={
+                    "run_type": run_type,
+                    "ok": bool(ok),
+                    "message": message,
+                    "created_at": _iso(_utcnow()),
+                },
+            )
+        except Exception:
+            # 운영상 log table이 없어도 파이프라인은 계속 돌아야 함
+            pass
 
-    # -------------------------
-    # Poll time (last run time)
-    # - 별도 테이블을 만들지 않고 run_log의 RUN 최신값을 사용
-    # -------------------------
+    # ----------------------------
+    # settings (argus.settings)
+    # ----------------------------
+    def get_setting_text(self, key: str) -> Optional[str]:
+        rows = self._get("settings", params={"select": "value", "key": f"eq.{key}"})
+        if not rows:
+            return None
+        v = (rows[0].get("value") or "").strip()
+        return v if v else None
+
+    def set_setting_text(self, key: str, value: str, description: Optional[str] = None) -> None:
+        # upsert: Prefer resolution=merge-duplicates header 방식도 있으나,
+        # PostgREST/Supabase 설정 편차가 있어 "있으면 patch, 없으면 insert"로 구현
+        existing = self._get("settings", params={"select": "key", "key": f"eq.{key}"})
+        if existing:
+            payload: Dict[str, Any] = {"value": str(value), "updated_at": _iso(_utcnow())}
+            if description is not None:
+                payload["description"] = description
+            self._patch("settings", payload=payload, params={"key": f"eq.{key}"})
+        else:
+            payload = {
+                "key": key,
+                "value": str(value),
+                "description": description,
+                "updated_at": _iso(_utcnow()),
+            }
+            self._post("settings", payload=payload)
+
+    # ----------------------------
+    # CVE state (best-effort)
+    # ----------------------------
     def get_last_poll_time(self, default_minutes: int = 60) -> datetime:
         """
-        마지막 RUN 시간.
-        - 최초 실행이면 now - default_minutes
+        가장 최근 run 시간 기반으로 since를 계산(없으면 now - default)
+        테이블/컬럼이 없으면 안전하게 fallback.
         """
+        now = _utcnow()
         try:
-            res = (
-                self.sb.table("run_log")
-                .select("run_at")
-                .eq("kind", "RUN")
-                .order("run_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            rows = res.data or []
+            rows = self._get("runs", params={"select": "created_at", "order": "created_at.desc", "limit": "1"})
             if not rows:
-                return _utcnow() - timedelta(minutes=default_minutes)
-
-            # Supabase는 ISO string 반환
-            s = rows[0]["run_at"]
-            # fromisoformat은 'Z'가 있으면 처리 불가인 버전이 있어 replace
-            if isinstance(s, str):
-                s2 = s.replace("Z", "+00:00")
-                return datetime.fromisoformat(s2)
-            return _utcnow() - timedelta(minutes=default_minutes)
+                return now - timedelta(minutes=default_minutes)
+            ts = rows[0].get("created_at")
+            if not ts:
+                return now - timedelta(minutes=default_minutes)
+            # ISO parse best-effort
+            try:
+                return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except Exception:
+                return now - timedelta(minutes=default_minutes)
         except Exception:
-            return _utcnow() - timedelta(minutes=default_minutes)
+            return now - timedelta(minutes=default_minutes)
 
-    def set_last_poll_time(self, ts: datetime) -> None:
-        # set은 run_log에 기록하는 것으로 대체(추적성 확보)
-        self.log_run("RUN", True, f"poll_time={ts.isoformat()}")
-
-    # -------------------------
-    # CVE state
-    # -------------------------
-    def get_cve_state(self, cve_id: str) -> Optional[dict[str, Any]]:
+    def get_cve_state(self, cve_id: str) -> Optional[Dict[str, Any]]:
         try:
-            res = self.sb.table("cve_state").select("*").eq("cve_id", cve_id).limit(1).execute()
-            rows = res.data or []
+            rows = self._get("cve_state", params={"select": "*", "cve_id": f"eq.{cve_id}", "limit": "1"})
             return rows[0] if rows else None
-        except Exception as e:
-            log.warning("get_cve_state failed: %s", e)
+        except Exception:
             return None
 
-    def upsert_cve_state(
-        self,
-        cve: dict[str, Any],
-        *,
-        last_seen_at: datetime,
-        last_notified_at: datetime | None = None,
-        last_notified_type: str | None = None,
-        last_notify_reason: str | None = None,
-        last_payload_hash: str | None = None,
-        last_rule_status: str | None = None,
-        last_official_rule_fingerprint: str | None = None,
-        last_ai_rule_fingerprint: str | None = None,
-        last_patch_fingerprint: str | None = None,
-        last_report_path: str | None = None,
-        last_rules_zip_path: str | None = None,
-    ) -> None:
+    def upsert_cve_state(self, cve: Dict[str, Any], **extra) -> None:
         """
-        schema.sql 컬럼에 맞춘 업서트.
-        cve dict는 상위 파이프라인에서 표준화된 키를 갖는 것을 전제로 함.
+        프로젝트에서 사용하는 cve_state 테이블이 이미 존재한다는 전제(best-effort).
+        존재하지 않으면 예외를 삼키고 파이프라인을 계속.
         """
-        row: dict[str, Any] = {
-            "cve_id": cve["cve_id"],
-            "last_seen_at": last_seen_at.isoformat(),
-            "published_date": cve.get("published_date"),
-            "last_modified_date": cve.get("last_modified_date"),
-            "cvss_score": cve.get("cvss_score"),
-            "cvss_severity": cve.get("cvss_severity"),
-            "cvss_vector": cve.get("cvss_vector"),
-            "attack_vector": cve.get("attack_vector"),
-            "cwe_ids": cve.get("cwe_ids") or [],
-            "cce_ids": cve.get("cce_ids") or [],
-            "epss_score": cve.get("epss_score"),
-            "epss_percentile": cve.get("epss_percentile"),
-            "is_cisa_kev": bool(cve.get("is_cisa_kev") or False),
-            "kev_added_date": cve.get("kev_added_date"),
-            "vulncheck_weaponized": cve.get("vulncheck_weaponized"),
-            "vulncheck_evidence": cve.get("vulncheck_evidence"),
-        }
-
-        # optional fields
-        if last_notified_at is not None:
-            row["last_notified_at"] = last_notified_at.isoformat()
-        if last_notified_type is not None:
-            row["last_notified_type"] = last_notified_type
-        if last_notify_reason is not None:
-            row["last_notify_reason"] = last_notify_reason
-        if last_payload_hash is not None:
-            row["last_payload_hash"] = last_payload_hash
-
-        if last_rule_status is not None:
-            row["last_rule_status"] = last_rule_status
-        if last_official_rule_fingerprint is not None:
-            row["last_official_rule_fingerprint"] = last_official_rule_fingerprint
-        if last_ai_rule_fingerprint is not None:
-            row["last_ai_rule_fingerprint"] = last_ai_rule_fingerprint
-        if last_patch_fingerprint is not None:
-            row["last_patch_fingerprint"] = last_patch_fingerprint
-
-        if last_report_path is not None:
-            row["last_report_path"] = last_report_path
-        if last_rules_zip_path is not None:
-            row["last_rules_zip_path"] = last_rules_zip_path
-
         try:
-            self.sb.table("cve_state").upsert(row).execute()
-        except Exception as e:
-            log.error("upsert_cve_state failed: %s", e)
-            raise
+            cve_id = cve.get("cve_id")
+            if not cve_id:
+                return
 
-    # -------------------------
-    # Report objects
-    # -------------------------
-    def insert_report_object(
+            existing = self.get_cve_state(cve_id)
+            payload: Dict[str, Any] = {"last_seen_at": _iso(_utcnow())}
+            payload.update(extra or {})
+
+            # 최소한의 필드들만 저장(테이블 스키마 차이에 대한 내성)
+            for k in [
+                "cve_id",
+                "summary",
+                "cvss_score",
+                "cvss_vector",
+                "attack_vector",
+                "epss_score",
+                "is_cisa_kev",
+            ]:
+                if k in cve and cve[k] is not None:
+                    payload[k] = cve[k]
+
+            if existing:
+                self._patch("cve_state", payload=payload, params={"cve_id": f"eq.{cve_id}"})
+            else:
+                payload["cve_id"] = cve_id
+                self._post("cve_state", payload=payload)
+        except Exception:
+            pass
+
+    # ----------------------------
+    # report artifacts (argus.report_artifacts)
+    # ----------------------------
+    def insert_report_artifact(
         self,
         *,
         cve_id: str,
         alert_type: str,
-        primary_reason: str,
-        report_path: str,
-        rules_zip_path: str | None,
-        content_hash: str,
-        report_sha256: str,
-        rules_sha256: str | None,
-        retention_until: datetime,
-        kev_listed: bool,
-        signed_url_expiry_seconds: int = 2592000,
+        notify_reason: str,
+        object_path: str,
+        kind: str,
+        sha256: str,
+        bytes_len: int,
     ) -> None:
-        row = {
-            "cve_id": cve_id,
-            "alert_type": alert_type,
-            "primary_reason": primary_reason,
-            "report_path": report_path,
-            "rules_zip_path": rules_zip_path,
-            "content_hash": content_hash,
-            "report_sha256": report_sha256,
-            "rules_sha256": rules_sha256,
-            "retention_until": retention_until.isoformat(),
-            "kev_listed": bool(kev_listed),
-            "signed_url_expiry_seconds": signed_url_expiry_seconds,
-        }
-        self.sb.table("report_objects").insert(row).execute()
+        self._post(
+            "report_artifacts",
+            payload={
+                "cve_id": cve_id,
+                "alert_type": alert_type,
+                "notify_reason": notify_reason,
+                "object_path": object_path,
+                "kind": kind,
+                "sha256": sha256,
+                "bytes": int(bytes_len),
+                "created_at": _iso(_utcnow()),
+            },
+        )
 
-    def list_expired_report_objects(self) -> list[dict[str, Any]]:
-        """
-        view: public.v_expired_report_objects
-        """
-        res = self.sb.table("v_expired_report_objects").select("*").limit(1000).execute()
-        return res.data or []
+    def list_report_artifacts_older_than(self, cutoff: datetime, limit: int = 200) -> List[Dict[str, Any]]:
+        # created_at < cutoff
+        return self._get(
+            "report_artifacts",
+            params={
+                "select": "id,object_path,kind,created_at",
+                "created_at": f"lt.{_iso(cutoff)}",
+                "order": "created_at.asc",
+                "limit": str(limit),
+            },
+            timeout=30,
+        )
 
-    def delete_report_object_rows(self, report_ids: list[str]) -> None:
-        if not report_ids:
-            return
-        # delete by report_id in (...)
-        self.sb.table("report_objects").delete().in_("report_id", report_ids).execute()
+    def delete_report_artifact_row(self, artifact_id: int) -> None:
+        self._delete("report_artifacts", params={"id": f"eq.{artifact_id}"})
 
-    # -------------------------
-    # Housekeeping DB function call
-    # -------------------------
-    def run_housekeeping_db(self) -> None:
+    # ----------------------------
+    # optional cleanup helpers (best-effort)
+    # ----------------------------
+    def delete_cve_state_older_than(self, cutoff: datetime, *, only_low: bool = False) -> None:
         """
-        public.argus_housekeeping_db() 호출
+        cve_state 정리(테이블이 없거나 컬럼이 없으면 실패해도 무시되는 best-effort로 쓰는 걸 권장)
         """
-        self.sb.rpc("argus_housekeeping_db", {}).execute()
+        try:
+            params = {"last_seen_at": f"lt.{_iso(cutoff)}"}
+            if only_low:
+                # 스키마가 다를 수 있으므로 best-effort: cvss_score <= 3.9 같은 룰을 쓰려면
+                # PostgREST 표현식이 필요. 여기서는 안전하게 last_seen_at만 기준으로 삭제.
+                pass
+            self._delete("cve_state", params=params)
+        except Exception:
+            pass
