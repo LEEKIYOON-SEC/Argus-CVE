@@ -74,18 +74,6 @@ jobs:
           print("dir(fetch*):", [x for x in dir(m) if "fetch" in x])
           PY
 
-      - name: Debug dump rules_official init
-        run: |
-          echo "===== src/rules_official/__init__.py (HEAD) ====="
-          sed -n '1,200p' src/rules_official/__init__.py
-          echo "===== python import inspect ====="
-          python - <<'PY'
-          import src.rules_official as m
-          print("module file:", m.__file__)
-          print("has fetch_official_rules:", hasattr(m, "fetch_official_rules"))
-          print("dir contains:", [x for x in dir(m) if "fetch" in x or "official" in x])
-          PY
-
       - name: Run Argus
         run: |
           python -m src.main
