@@ -32,6 +32,7 @@ from .github_osint import (
     search_code_by_cve,
     enrich_code_findings_with_snippets,
 )
+from .github_rule_candidates import fetch_trusted_github_rule_candidates
 
 log = get_logger("argus.main")
 
@@ -44,9 +45,9 @@ def _summarize_official_hits(official_hits: list[dict]) -> List[str]:
     if not official_hits:
         return ["- (none)"]
     lines: List[str] = []
-    for h in official_hits[:60]:
+    for h in official_hits[:80]:
         lines.append(f"- [{h.get('engine')}] {h.get('source')} :: {h.get('rule_path')} (ref {h.get('reference')})")
-    if len(official_hits) > 60:
+    if len(official_hits) > 80:
         lines.append(f"- ...(total {len(official_hits)} hits)")
     return lines
 
@@ -84,6 +85,37 @@ def _build_ai_rules_section_md(ai_rules) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _rules_zip_readme(cve_id: str) -> str:
+    return f"""# Argus-AI-Threat Intelligence - Rules Bundle
+
+CVE: {cve_id}
+
+## Folder layout
+- rules/suricata/<source>/...
+- rules/snort2/<source>/...
+- rules/snort3/<source>/...
+- rules/sigma/<source>/...
+- rules/yara/<source>/...
+- rules/<engine>/AI/... (AI-generated, validated PASS only)
+
+## Validation commands (same policy used by Argus)
+- Suricata:
+  - suricata -T -c /etc/suricata/suricata.yaml -S <rulefile>
+- Snort2:
+  - snort -T -c snort.conf
+- Snort3:
+  - snort3 -T -c snort.lua -R <rulefile>
+- Sigma (sigma-cli):
+  - sigma validate <rule.yml>
+- YARA:
+  - yara -C <rule.yar>
+
+## Notes
+- Only rules that PASS engine validation are included in this ZIP.
+- Full context and Evidence Bundle are in the Report link delivered to Slack.
+"""
+
+
 def main() -> None:
     setup_logging()
     cfg = load_config()
@@ -97,37 +129,46 @@ def main() -> None:
         now = _utcnow()
 
         if selftest:
-            post_slack(cfg.SLACK_WEBHOOK_URL, "🧪 Argus 셀프테스트: CVE→KEV/EPSS→OSINT(snippet)→룰(공식/AI)→검증→Report/Slack")
+            post_slack(cfg.SLACK_WEBHOOK_URL, "🧪 Argus 셀프테스트: CVE→KEV/EPSS→OSINT(snippet)→공개룰편입→룰검증→Report/Slack")
 
-        # 1) CVE.org PUBLISHED 신규 수집
         cves = fetch_cveorg_published_since(since, until=now)
         if not cves:
             db.log_run("RUN", True, f"no new CVE PUBLISHED since {since.isoformat()}")
             run_ok = True
             return
 
-        # 2) KEV/EPSS enrich
         cves = enrich_with_kev_epss(cfg, cves)
 
         sent = 0
         for cve in cves:
             cve_id = cve["cve_id"]
-
             _ = compute_risk_flags(cfg, cve)
 
             prev = db.get_cve_state(cve_id)
-
             prev_cmp = None
             if prev:
                 prev_cmp = dict(prev)
                 prev_cmp["references"] = cve.get("references") or []
 
-            # 3) 위험/정책 기반 notify
             notify, reason = should_notify(cfg, cve, prev_cmp)
             change_kind = classify_change(prev_cmp, cve) if prev_cmp else "NO_PREV"
 
-            # 4) 공식 룰 수집/검증(먼저) — 갱신 재알림 트리거 판정에 필요
-            official_hits = fetch_official_rules(cfg, cve_id)
+            # 1) OSINT(먼저) — GitHub snippet을 official 룰 후보로 편입하기 위함
+            vulncheck_findings = fetch_vulncheck_findings(cfg, cve_id)
+
+            github_findings = []
+            github_findings.extend(search_repos_by_cve(cfg, cve_id, max_items=4))
+            github_findings.extend(search_code_by_cve(cfg, cve_id, max_items=6))
+            github_findings = enrich_code_findings_with_snippets(cfg, github_findings, max_fetch=2, snippet_max_chars=3500)
+
+            # ✅ 신뢰 GitHub 룰 후보(검증 PASS만) -> official hits로 편입
+            github_rule_hits = fetch_trusted_github_rule_candidates(cfg, cve_id=cve_id, github_findings=github_findings, max_rules=4)
+
+            # 2) 공식 룰 수집 + GitHub 룰 편입
+            official_hits_base = fetch_official_rules(cfg, cve_id)
+            official_hits = list(official_hits_base) + list(github_rule_hits)
+
+            # 3) 공식 룰 검증/번들링(라우팅 포함)
             artifacts, _, official_fp, rules_section_md = validate_and_build_bundle(
                 cfg=cfg,
                 cve=cve,
@@ -139,9 +180,7 @@ def main() -> None:
             prev_rule_status = (prev.get("last_rule_status") if prev else None) or "NONE"
             prev_official_fp = (prev.get("last_official_rule_fingerprint") if prev else None) or ""
 
-            # ✅ 강화된 갱신 재알림 규칙:
-            # - 이전에 공식 룰이 없었는데(= AI_ONLY/NONE), 이번에 공식 룰이 생기면 무조건 갱신 재알림
-            # - 이전에도 공식 룰이 있었지만 fingerprint가 바뀌면(추가/삭제/수정) 갱신 재알림
+            # ✅ 공식/공개 룰 변경 재알림 강화
             forced_rule_update = False
             if had_official_now:
                 if prev_rule_status in ("AI_ONLY", "NONE"):
@@ -151,7 +190,6 @@ def main() -> None:
                 elif official_fp and (not prev_official_fp):
                     forced_rule_update = True
 
-            # notify가 아니어도, 공식 룰 갱신이면 강제 notify
             if (not notify) and forced_rule_update:
                 notify = True
                 reason = "공식/공개 룰 변경(추가/갱신)으로 재알림"
@@ -161,7 +199,6 @@ def main() -> None:
                 db.upsert_cve_state(cve, last_seen_at=_utcnow())
                 continue
 
-            # alert_type
             if not prev:
                 alert_type = "NEW_CVE_PUBLISHED"
             elif forced_rule_update or change_kind == "ESCALATION":
@@ -169,21 +206,11 @@ def main() -> None:
             else:
                 alert_type = "HIGH_RISK"
 
-            # 5) 패치/권고 텍스트
+            # 4) 패치/권고 텍스트(PDF 포함)
             patch_findings = fetch_patch_findings_from_references(cve.get("references") or [], max_pages=4)
             patch_section_md = build_patch_section_md(patch_findings)
 
-            # 6) OSINT: VulnCheck + GitHub discovery + ✅ code snippet enrichment
-            vulncheck_findings = fetch_vulncheck_findings(cfg, cve_id)
-
-            github_findings = []
-            github_findings.extend(search_repos_by_cve(cfg, cve_id, max_items=4))
-            github_findings.extend(search_code_by_cve(cfg, cve_id, max_items=4))
-
-            # ✅ 핵심: code 검색 결과 상위 2개에 대해 파일 내용 일부를 가져와 evidence에 포함
-            github_findings = enrich_code_findings_with_snippets(cfg, github_findings, max_fetch=2, snippet_max_chars=3500)
-
-            # 7) Evidence Bundle (OSINT 포함)
+            # 5) Evidence Bundle
             official_summary_lines = _summarize_official_hits(official_hits)
             evidence_text = build_evidence_bundle_text(
                 cfg=cfg,
@@ -195,7 +222,7 @@ def main() -> None:
                 ai_rule_generation_notes=None,
             )
 
-            # 8) AI 룰 생성 필요 여부
+            # 6) AI 룰 생성(공식 Sigma 없으면 Sigma는 반드시 생성)
             has_sigma_official = any(a.validated and a.engine == "sigma" for a in official_pass)
             need_ai = (not had_official_now) or (not has_sigma_official)
 
@@ -203,8 +230,10 @@ def main() -> None:
             if need_ai:
                 ai_rules = generate_ai_rules(cfg=cfg, cve=cve, evidence_bundle_text=evidence_text, prefer_snort3=False)
 
-            # 9) rules.zip: 공식 PASS + AI PASS 전부 포함
+            # 7) rules.zip 구성(README + 공식PASS + AIPASS)
             zip_files: List[Tuple[str, bytes]] = []
+            zip_files.append(("README.md", _rules_zip_readme(cve_id).encode("utf-8")))
+
             for a in official_pass:
                 zpath = f"rules/{a.engine}/{a.source}/{a.rule_path}".replace("..", "_")
                 zip_files.append((zpath, (a.rule_text.strip() + "\n").encode("utf-8")))
@@ -227,10 +256,9 @@ def main() -> None:
                 rule_status = "NONE"
 
             ai_bundle_fp = sha256_hex(("\n".join(sorted([r.fingerprint for r in ai_pass]))).encode("utf-8")) if ai_pass else ""
-
             ai_rules_section_md = _build_ai_rules_section_md(ai_rules)
 
-            # 10) Report 생성
+            # 8) Report 저장(+rules.zip)
             report_md = build_report_markdown(
                 cve=cve,
                 alert_type=alert_type,
@@ -253,7 +281,7 @@ def main() -> None:
                 rules_zip_bytes=rules_zip_bytes,
             )
 
-            # 11) Slack: PASS 룰 일부 복붙(상위 3개)
+            # 9) Slack: PASS 룰 상위 3개 복붙
             pass_rules_for_slack = []
             for a in official_pass:
                 pass_rules_for_slack.append(
@@ -276,7 +304,7 @@ def main() -> None:
             )
             post_slack(cfg.SLACK_WEBHOOK_URL, slack_text)
 
-            # 12) 상태 저장
+            # 10) 상태 저장
             payload = {
                 "cve_id": cve_id,
                 "alert_type": alert_type,
