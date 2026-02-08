@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
-from .http import http_get
+from .http import http_get, http_head
 
 log = logging.getLogger("argus.patch_intel")
 
@@ -17,20 +17,15 @@ class PatchFinding:
     kind: str           # "vendor_advisory" | "release_note" | "patch" | "workaround" | "other"
     title: str
     url: str
-    extracted_text: str  # URL을 LLM에 주지 않기 위해, 페이지에서 추출한 정규화 텍스트
+    extracted_text: str
 
 
-def _html_to_text(html: bytes, max_chars: int = 6000) -> str:
-    """
-    HTML을 텍스트로 정규화(LLM Evidence Bundle에 넣기 위함).
-    - JS 렌더링이 필요한 페이지는 한계가 있음(그 경우 extracted_text가 빈약해질 수 있음)
-    """
+def _html_to_text(html: bytes, max_chars: int = 6500) -> str:
     try:
         soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
         text = soup.get_text(separator="\n")
-        # 공백 정리
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r"[ \t]{2,}", " ", text)
         text = text.strip()
@@ -43,48 +38,114 @@ def _html_to_text(html: bytes, max_chars: int = 6000) -> str:
 
 def _classify_url(url: str) -> str:
     u = (url or "").lower()
-    if any(k in u for k in ["advisory", "security", "bulletin", "kb", "cve"]):
+
+    # 보안권고 우선
+    if any(k in u for k in ["security", "advisory", "bulletin", "alert", "/cve", "psirt"]):
         return "vendor_advisory"
-    if any(k in u for k in ["release", "changelog", "notes", "version"]):
+
+    # KB / 고정 문서
+    if any(k in u for k in ["kb", "knowledgebase", "support", "documentation", "docs"]):
+        return "vendor_advisory"
+
+    # 릴리즈/체인지로그
+    if any(k in u for k in ["release", "releases", "changelog", "notes", "version", "upgrade"]):
         return "release_note"
-    if any(k in u for k in ["patch", "download", "fix"]):
+
+    # 패치/다운로드
+    if any(k in u for k in ["patch", "download", "fix", "hotfix"]):
         return "patch"
-    if any(k in u for k in ["workaround", "mitigation"]):
+
+    # 완화/워크어라운드
+    if any(k in u for k in ["workaround", "mitigation", "hardening"]):
         return "workaround"
+
     return "other"
+
+
+def _priority_score(url: str) -> int:
+    """
+    낮을수록 높은 우선순위.
+    """
+    u = (url or "").lower()
+    kind = _classify_url(url)
+
+    score = 50
+    if kind == "vendor_advisory":
+        score = 0
+    elif kind == "release_note":
+        score = 10
+    elif kind == "patch":
+        score = 15
+    elif kind == "workaround":
+        score = 20
+    else:
+        score = 40
+
+    # 파일형식 패널티(HTML 우선)
+    if u.endswith(".pdf"):
+        score += 30
+    if u.endswith((".zip", ".exe", ".msi", ".tar.gz")):
+        score += 40
+
+    # 보안 키워드 보너스
+    if "psirt" in u:
+        score -= 5
+    if "security" in u:
+        score -= 3
+    if "cve" in u:
+        score -= 2
+
+    return max(score, 0)
 
 
 def fetch_patch_findings_from_references(
     references: List[str],
     *,
     max_pages: int = 4,
-    per_page_text_limit: int = 6000,
+    per_page_text_limit: int = 6500,
 ) -> List[PatchFinding]:
     """
-    '가능하면 무조건' 공식 패치/권고를 확보하기 위한 1차 수집기.
-    - 입력: CVE references URL 리스트
-    - 출력: PatchFinding 리스트(정규화된 텍스트 포함)
-
-    운영 안정성/비용 0 전제를 위해:
-    - 너무 많은 페이지를 무작정 크롤링하지 않음(max_pages 제한)
-    - 다운로드/텍스트 추출 실패는 무시하고 계속 진행
+    공식 패치/권고를 '가능하면 무조건' 확보하기 위한 1차 수집기(성공률 보강).
+    - max_pages는 운영 안정성/비용 0/레이트 제한을 위해 유지
     """
     out: List[PatchFinding] = []
     if not references:
         return out
 
-    # 우선순위: advisory/release/patch 관련 키워드 URL을 앞에 두고, 그 외는 뒤로
-    ranked = sorted(references, key=lambda u: 0 if _classify_url(u) != "other" else 1)
+    ranked = sorted(list(dict.fromkeys(references)), key=_priority_score)  # 중복 제거 + 우선순위 정렬
 
     for url in ranked[:max_pages]:
         try:
-            raw = http_get(url, timeout=40, headers={"Accept": "text/html,application/xhtml+xml"})
+            # 먼저 HEAD로 콘텐츠 타입 확인(가능하면)
+            ctype = ""
+            try:
+                h = http_head(url, timeout=15)
+                ctype = (h.headers.get("Content-Type") or "").lower()
+            except Exception:
+                ctype = ""
+
+            # PDF/바이너리는 현재 단계에서 텍스트 추출하지 않음(추후 확장)
+            if "application/pdf" in ctype or url.lower().endswith(".pdf"):
+                out.append(
+                    PatchFinding(
+                        kind=_classify_url(url),
+                        title="PDF detected (text extraction skipped in current build)",
+                        url=url,
+                        extracted_text="PDF content detected. Text extraction is not enabled in current build. Consider adding a PDF text extraction step if needed.",
+                    )
+                )
+                continue
+
+            raw = http_get(url, timeout=40, headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8"})
             text = _html_to_text(raw, max_chars=per_page_text_limit)
             if not text:
                 continue
+
             kind = _classify_url(url)
             title = text.splitlines()[0][:200] if text.splitlines() else url
+
             out.append(PatchFinding(kind=kind, title=title, url=url, extracted_text=text))
+
         except Exception as e:
             log.info("patch page fetch failed: %s (%s)", url, e)
             continue
@@ -93,10 +154,6 @@ def fetch_patch_findings_from_references(
 
 
 def build_patch_section_md(findings: List[PatchFinding]) -> str:
-    """
-    Report에 붙일 '패치/벤더 권고' 섹션 Markdown.
-    - Slack에는 길이 폭발 가능성이 높아 기본적으로 Report에만 포함하는 방향.
-    """
     lines: List[str] = []
     lines.append("## 7) Vendor Patch / Advisory (Best-effort)")
     if not findings:
@@ -110,7 +167,6 @@ def build_patch_section_md(findings: List[PatchFinding]) -> str:
         lines.append("")
         lines.append("Extracted (normalized) text:")
         lines.append("```")
-        # 너무 길면 이미 _html_to_text에서 truncate됨
         lines.append(f.extracted_text)
         lines.append("```")
         lines.append("")
