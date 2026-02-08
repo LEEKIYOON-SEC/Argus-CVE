@@ -1,0 +1,14 @@
+requests
+pydantic
+python-dateutil
+tenacity
+cachetools
+beautifulsoup4
+lxml
+supabase
+postgrest
+gotrue
+storage3
+httpx
+PyYAML
+sigma-cli
