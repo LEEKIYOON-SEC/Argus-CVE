@@ -1,8 +1,8 @@
 name: Argus Schedule
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"  # every 15 minutes (UTC)
+  #schedule:
+    #- cron: "*/15 * * * *"  # every 15 minutes (UTC)
   workflow_dispatch:
 
 permissions:
