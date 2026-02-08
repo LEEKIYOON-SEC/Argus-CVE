@@ -143,3 +143,57 @@ def request_json(
             break
 
     raise HttpError(str(last_err))
+
+def http_get(
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = 40,
+    max_retries: int = 4,
+    retry_on_status: Optional[set[int]] = None,
+    return_bytes: bool = True,
+) -> Any:
+    """
+    Compatibility helper expected by rules_official modules.
+    - Downloads non-JSON content (zip/tar/gz/html/txt)
+    - By default returns bytes (return_bytes=True)
+    - If return_bytes=False returns text decoded as utf-8 (errors='ignore')
+    """
+    if retry_on_status is None:
+        retry_on_status = {429, 500, 502, 503, 504}
+
+    last_err: Optional[Exception] = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=timeout)
+
+            if r.status_code in retry_on_status:
+                last_err = HttpError(f"GET {url} retryable status={r.status_code} body={r.text[:200]}")
+                if attempt < max_retries:
+                    ra = r.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            time.sleep(min(60, int(ra)))
+                        except Exception:
+                            _sleep_backoff(attempt)
+                    else:
+                        _sleep_backoff(attempt)
+                    continue
+
+            if r.status_code >= 400:
+                raise HttpError(f"GET {url} failed status={r.status_code} body={r.text[:400]}")
+
+            if return_bytes:
+                return r.content
+            return r.content.decode("utf-8", errors="ignore")
+
+        except (requests.RequestException, HttpError) as e:
+            last_err = e
+            if attempt < max_retries:
+                _sleep_backoff(attempt)
+                continue
+            break
+
+    raise HttpError(str(last_err))
