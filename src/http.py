@@ -11,6 +11,10 @@ class HttpError(RuntimeError):
     """Backwards-compatible error type for existing modules."""
     pass
 
+# Alias for modules that import HTTPError
+HTTPError = HttpError
+
+
 
 def _sleep_backoff(attempt: int, base: float = 1.0, cap: float = 20.0) -> None:
     # exponential backoff + jitter
