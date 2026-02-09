@@ -2,3 +2,4 @@ requests
 supabase
 pytz
 tenacity
+groq
