@@ -26,6 +26,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          # Phase 1을 위해 미리 등록 권장
-          # GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }} 
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }} 
         run: python src/main.py
