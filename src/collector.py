@@ -56,7 +56,7 @@ class Collector:
         except: return []
 
     def enrich_cve(self, cve_id):
-        """CVE 상세 정보 조회 (Title 및 CVSS 강화)"""
+        """CVE 상세 정보 (CWE, References 추가)"""
         try:
             parts = cve_id.split('-')
             year, id_num = parts[1], parts[2]
@@ -64,13 +64,10 @@ class Collector:
             raw_url = f"https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/{year}/{group_dir}/{cve_id}.json"
             
             res = requests.get(raw_url, timeout=5)
-            # 기본 데이터 구조 (Title 추가됨)
             data = {
-                "id": cve_id, 
-                "title": "N/A", 
-                "cvss": 0.0, 
-                "description": "N/A", 
-                "state": "UNKNOWN"
+                "id": cve_id, "title": "N/A", "cvss": 0.0, 
+                "description": "N/A", "state": "UNKNOWN",
+                "cwe": [], "references": []
             }
             
             if res.status_code == 200:
@@ -80,7 +77,7 @@ class Collector:
                 data['state'] = json_data.get('cveMetadata', {}).get('state', 'UNKNOWN')
                 data['title'] = cna.get('title', 'N/A')
                 
-                # Description 추출
+                # Description
                 try:
                     for d in cna.get('descriptions', []):
                         if d.get('lang') == 'en':
@@ -88,20 +85,34 @@ class Collector:
                             break
                 except: pass
                 
-                # CVSS 점수 추출 (V4 -> V3.1 -> V3.0 순서)
+                # CVSS
                 try:
                     metrics = cna.get('metrics', [])
                     for m in metrics:
                         if 'cvssV4_0' in m:
-                            data['cvss'] = m['cvssV4_0'].get('baseScore', 0.0)
-                            break
+                            data['cvss'] = m['cvssV4_0'].get('baseScore', 0.0); break
                         elif 'cvssV3_1' in m:
-                            data['cvss'] = m['cvssV3_1'].get('baseScore', 0.0)
-                            break
+                            data['cvss'] = m['cvssV3_1'].get('baseScore', 0.0); break
                         elif 'cvssV3_0' in m:
-                            data['cvss'] = m['cvssV3_0'].get('baseScore', 0.0)
-                            break
+                            data['cvss'] = m['cvssV3_0'].get('baseScore', 0.0); break
                 except: pass
-                
+
+                # [추가] CWE (Problem Types)
+                try:
+                    pts = cna.get('problemTypes', [])
+                    for pt in pts:
+                        for desc in pt.get('descriptions', []):
+                            # cweId가 있으면 가져오고 없으면 description 가져옴
+                            cwe_id = desc.get('cweId', desc.get('description', ''))
+                            if cwe_id: data['cwe'].append(cwe_id)
+                except: pass
+
+                # [추가] References
+                try:
+                    for ref in cna.get('references', []):
+                        if 'url' in ref: data['references'].append(ref['url'])
+                except: pass
+
             return data
-        except: return {"id": cve_id, "title": "Error", "cvss": 0.0, "description": "Error", "state": "ERROR"}
+        except: 
+            return {"id": cve_id, "title": "Error", "cvss": 0.0, "description": "Error", "state": "ERROR", "cwe": [], "references": []}

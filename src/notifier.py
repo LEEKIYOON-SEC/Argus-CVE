@@ -9,10 +9,9 @@ class SlackNotifier:
         clean_reason = reason.split(' (')[0] if ' (' in reason else reason
         emoji = "🚨" if "KEV" in reason else "🆕"
         
-        # [변경] 번역된 제목 사용 (없으면 원문)
         display_title = cve_data.get('title_ko', cve_data.get('title', 'N/A'))
-        # [변경] 번역된 내용 사용 (없으면 summary_ko, 그것도 없으면 원문)
         display_desc = cve_data.get('desc_ko', cve_data.get('summary_ko', cve_data['description']))
+        cwe_info = ", ".join(cve_data.get('cwe', [])) if cve_data.get('cwe') else "N/A"
 
         blocks = [
             {
@@ -28,9 +27,9 @@ class SlackNotifier:
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*CVSS Score:*\n{cve_data['cvss']}"},
-                    {"type": "mrkdwn", "text": f"*EPSS Prob:*\n{cve_data['epss']*100:.2f}%"},
-                    {"type": "mrkdwn", "text": f"*KEV Listed:*\n{'✅ YES' if cve_data['is_kev'] else '❌ No'}"},
+                    {"type": "mrkdwn", "text": f"*CVSS:*\n{cve_data['cvss']}"},
+                    {"type": "mrkdwn", "text": f"*EPSS:*\n{cve_data['epss']*100:.2f}%"},
+                    {"type": "mrkdwn", "text": f"*CWE:*\n{cwe_info}"}, # CWE 추가
                 ]
             }
         ]

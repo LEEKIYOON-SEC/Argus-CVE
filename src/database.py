@@ -15,50 +15,51 @@ class ArgusDB:
         self.client.table("cves").upsert(data).execute()
 
     def upload_report(self, cve_id, content):
-        """
-        한글 깨짐 방지를 위해 BOM이 포함된 HTML 업로드
-        """
         file_path = f"{cve_id}.html"
         bucket = "reports"
         
-        # HTML 템플릿
-        html_content = f"""<!DOCTYPE html>
+        # [디자인 업그레이드] Modern CSS Dashboard Style
+        html_template = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{cve_id} Report</title>
+    <title>{cve_id} Analysis Report</title>
     <style>
-        body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; color: #333; }}
-        h1 {{ border-bottom: 2px solid #eee; padding-bottom: 10px; color: #2c3e50; }}
-        h2 {{ margin-top: 30px; color: #34495e; }}
-        code {{ background: #f8f9fa; padding: 2px 5px; border-radius: 3px; color: #d63384; }}
-        pre {{ background: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; border: 1px solid #ddd; }}
-        blockquote {{ border-left: 4px solid #ccc; margin: 0; padding-left: 10px; color: #666; }}
-        .meta-info {{ background: #f1f3f5; padding: 10px; border-radius: 5px; margin-bottom: 20px; }}
+        :root {{ --primary: #2563eb; --danger: #dc2626; --warning: #d97706; --success: #059669; --bg: #f3f4f6; --card: #ffffff; --text: #1f2937; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; }}
+        .container {{ max-width: 900px; margin: 0 auto; }}
+        .header {{ background: var(--card); padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; border-left: 5px solid var(--primary); }}
+        .header h1 {{ margin: 0; font-size: 24px; color: #111; }}
+        .header .meta {{ font-size: 14px; color: #6b7280; margin-top: 5px; }}
+        .card {{ background: var(--card); padding: 25px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+        .card h2 {{ margin-top: 0; font-size: 18px; border-bottom: 2px solid #f3f4f6; padding-bottom: 10px; color: var(--primary); }}
+        .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; margin-right: 5px; }}
+        .badge-red {{ background-color: var(--danger); }}
+        .badge-orange {{ background-color: var(--warning); }}
+        .badge-green {{ background-color: var(--success); }}
+        .badge-gray {{ background-color: #6b7280; }}
+        code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 3px; color: #e11d48; font-family: monospace; }}
+        ul {{ padding-left: 20px; }}
+        li {{ margin-bottom: 5px; }}
+        a {{ color: var(--primary); text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        .ref-box {{ background: #f8fafc; padding: 10px; border-radius: 5px; font-size: 13px; border: 1px solid #e2e8f0; }}
     </style>
 </head>
 <body>
-    {content.replace(chr(10), '<br>')}
+    <div class="container">
+        {content}
+    </div>
 </body>
 </html>"""
         
         try:
-            # [핵심] UTF-8 BOM(Byte Order Mark) 추가
-            # utf-8-sig 인코딩을 사용하면 파일 맨 앞에 EF BB BF 바이트가 추가됨
-            # 브라우저는 이를 보고 "아! UTF-8이구나" 하고 즉시 인식함
-            encoded_content = html_content.encode('utf-8-sig')
-            
+            encoded_content = html_template.encode('utf-8-sig')
             self.client.storage.from_(bucket).upload(
-                file_path, 
-                encoded_content, 
-                {
-                    "content-type": "text/html; charset=utf-8", 
-                    "x-upsert": "true"
-                }
+                file_path, encoded_content, 
+                {"content-type": "text/html; charset=utf-8", "x-upsert": "true"}
             )
-        except:
-            pass
-            
+        except: pass
         return self.client.storage.from_(bucket).create_signed_url(file_path, 60 * 60 * 24 * 30)
