@@ -1,5 +1,4 @@
 import requests
-import json
 import os
 
 class SlackNotifier:
@@ -9,15 +8,10 @@ class SlackNotifier:
     def send_alert(self, cve_data, reason, report_url=None):
         """Slack Block Kit 메시지 전송"""
         
-        # 아이콘 및 색상 설정
         emoji = "⚠️"
-        color = "#ffcc00" # Yellow
-        if "KEV" in reason:
-            emoji = "🚨"
-            color = "#ff0000" # Red
-        elif "EPSS" in reason and cve_data['epss'] >= 0.1:
-             emoji = "🔥"
-             color = "#ff5500" # Orange
+        if "KEV" in reason: emoji = "🚨"
+        elif "NEW" in reason: emoji = "🆕"
+        elif "Surge" in reason: emoji = "📈"
 
         blocks = [
             {
@@ -31,10 +25,16 @@ class SlackNotifier:
                 "type": "section",
                 "fields": [
                     {"type": "mrkdwn", "text": f"*CVSS Score:*\n{cve_data['cvss']}"},
-                    {"type": "mrkdwn", "text": f"*EPSS Probability:*\n{cve_data['epss']} ({cve_data['epss']*100:.1f}%)"},
+                    {"type": "mrkdwn", "text": f"*EPSS Probability:*\n{cve_data['epss']} ({cve_data['epss']*100:.2f}%)"},
                     {"type": "mrkdwn", "text": f"*KEV Listed:*\n{'✅ YES' if cve_data['is_kev'] else '❌ No'}"},
-                    {"type": "mrkdwn", "text": f"*Source:*\ncve.org"}
                 ]
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Target Matched:*\n{reason.split('(')[-1].replace(')', '') if '(' in reason else 'Unknown'}"
+                }
             },
             {
                 "type": "section",
@@ -45,7 +45,6 @@ class SlackNotifier:
             }
         ]
 
-        # 리포트 버튼 (Signed URL)
         if report_url:
             blocks.append({
                 "type": "actions",
@@ -54,7 +53,7 @@ class SlackNotifier:
                         "type": "button",
                         "text": {
                             "type": "plain_text",
-                            "text": "📄 상세 분석 리포트 확인 (30일 유효)"
+                            "text": "📄 상세 한글 리포트 보기"
                         },
                         "url": report_url,
                         "style": "primary"

@@ -21,11 +21,14 @@ class ArgusDB:
         file_path = f"{cve_id}.md"
         bucket = "reports"
         
-        # 파일 업로드 (덮어쓰기 허용)
+        # 파일 업로드 (UTF-8 명시)
         self.client.storage.from_(bucket).upload(
             file_path, 
             content.encode('utf-8'), 
-            {"content-type": "text/markdown; charset=utf-8", "x-upsert": "true"}
+            {
+                "content-type": "text/markdown; charset=utf-8", 
+                "x-upsert": "true"
+            }
         )
         
         # 30일 유효한 Signed URL 생성

@@ -1,4 +1,4 @@
-name: Argus Threat Intel Scan (Phase 0)
+name: Argus Threat Intel Scan
 
 on:
   #schedule:
@@ -23,9 +23,9 @@ jobs:
 
       - name: Run Scanner
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: python src/main.py
