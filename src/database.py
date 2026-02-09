@@ -18,7 +18,7 @@ class ArgusDB:
         file_path = f"{cve_id}.html"
         bucket = "reports"
         
-        # [디자인 혁신] 테이블 기반 레이아웃 & 시각적 강조
+        # HTML 템플릿 (기존 디자인 유지)
         html_template = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -29,33 +29,20 @@ class ArgusDB:
     <style>
         :root {{ --primary: #1e40af; --secondary: #3b82f6; --danger: #ef4444; --bg: #f8fafc; --text: #334155; }}
         body {{ font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif; line-height: 1.6; background: var(--bg); color: var(--text); padding: 20px; max-width: 900px; margin: 0 auto; }}
-        
-        /* 헤더 스타일 */
         .header {{ background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-left: 6px solid var(--primary); margin-bottom: 25px; }}
         .header h1 {{ margin: 0 0 10px 0; font-size: 26px; color: #0f172a; }}
         .meta-tag {{ display: inline-block; background: #e2e8f0; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; margin-right: 8px; color: #475569; }}
-        
-        /* 카드 스타일 */
         .card {{ background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 20px; }}
         .card-title {{ font-size: 18px; font-weight: 700; color: var(--primary); border-bottom: 2px solid #f1f5f9; padding-bottom: 12px; margin-bottom: 20px; }}
-        
-        /* AI 분석 테이블 스타일 */
         .ai-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
         .ai-table th {{ width: 20%; background: #f8fafc; padding: 12px; text-align: left; color: #64748b; font-weight: 600; border-bottom: 1px solid #e2e8f0; vertical-align: top; }}
         .ai-table td {{ padding: 12px; border-bottom: 1px solid #e2e8f0; color: #334155; }}
-        
-        /* 대응 방안 박스 */
         .mitigation-box {{ background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 20px; }}
-        .mitigation-item {{ margin-bottom: 10px; display: flex; align-items: start; }}
-        .mitigation-icon {{ margin-right: 10px; color: var(--secondary); font-weight: bold; }}
-        
-        /* 배지 시스템 */
-        .badge {{ display: inline-flex; align-items: center; px: 2.5; py: 0.5; border-radius: 9999px; font-size: 12px; font-weight: 600; color: white; padding: 4px 10px; margin-right: 5px; }}
+        .badge {{ display: inline-flex; align-items: center; border-radius: 9999px; font-size: 12px; font-weight: 600; color: white; padding: 4px 10px; margin-right: 5px; }}
         .bg-red {{ background-color: var(--danger); }}
         .bg-orange {{ background-color: #f97316; }}
         .bg-green {{ background-color: #10b981; }}
         .bg-gray {{ background-color: #64748b; }}
-        
         a {{ color: var(--secondary); text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
     </style>
@@ -68,10 +55,18 @@ class ArgusDB:
 </html>"""
         
         try:
-            encoded_content = html_template.encode('utf-8-sig')
+            # [수정] 표준 UTF-8 사용 및 Content-Type 명시
+            encoded_content = html_template.encode('utf-8')
+            
             self.client.storage.from_(bucket).upload(
-                file_path, encoded_content, 
-                {"content-type": "text/html; charset=utf-8", "x-upsert": "true"}
+                file_path, 
+                encoded_content, 
+                {
+                    "content-type": "text/html; charset=utf-8", # 중요: 브라우저가 HTML로 인식하게 함
+                    "x-upsert": "true"
+                }
             )
-        except: pass
+        except Exception as e:
+            print(f"[WARN] Upload failed: {e}")
+            
         return self.client.storage.from_(bucket).create_signed_url(file_path, 60 * 60 * 24 * 30)

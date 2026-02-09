@@ -13,27 +13,35 @@ class SlackNotifier:
         display_desc = cve_data.get('desc_ko', cve_data.get('summary_ko', cve_data['description']))
         cwe_info = ", ".join(cve_data.get('cwe', [])) if cve_data.get('cwe') else "N/A"
 
-        # [추가] Vendor/Product 정보 포맷팅
-        affected_info = "N/A"
+        # Vendor 정보 포맷팅 (줄바꿈 활용)
+        affected_text = "정보 없음"
         if cve_data.get('affected'):
-            # 첫 번째 영향받는 자산만 표시 (너무 길어지는 것 방지)
             first = cve_data['affected'][0]
-            affected_info = f"*Vendor:* {first['vendor']}\n*Product:* {first['product']}\n*Versions:* {first['versions']}"
+            affected_text = f"• *Vendor:* {first['vendor']}\n• *Product:* {first['product']}\n• *Versions:* {first['versions']}"
             if len(cve_data['affected']) > 1:
-                affected_info += f"\n(외 {len(cve_data['affected'])-1}건)"
+                affected_text += f"\n(외 {len(cve_data['affected'])-1}건)"
 
         blocks = [
+            # 1. 헤더 (Reason)
             {
                 "type": "header",
                 "text": {"type": "plain_text", "text": f"{emoji} {clean_reason}: {cve_data['id']}"}
             },
+            # 2. 타이틀 (가장 크게)
             {
                 "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Title:*\n{display_title}"},
-                    {"type": "mrkdwn", "text": f"{affected_info}"} # Vendor 정보 추가
-                ]
+                "text": {"type": "mrkdwn", "text": f"*Title:*\n*{display_title}*"}
             },
+            # 3. 구분선 (시각적 분리)
+            {"type": "divider"},
+            # 4. 벤더 정보 (타이틀 아래 배치)
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": affected_text}
+            },
+            # 5. 구분선
+            {"type": "divider"},
+            # 6. 통계 정보 (2열 배치 유지)
             {
                 "type": "section",
                 "fields": [
@@ -52,6 +60,7 @@ class SlackNotifier:
                 "elements": [{"type": "mrkdwn", "text": f"🎯 *Target Asset:* {target_info}"}]
             })
         
+        # 7. 설명 (Description)
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": f"*Description:*\n{display_desc}"}
