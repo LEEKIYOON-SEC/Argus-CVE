@@ -55,8 +55,43 @@ class Collector:
             return []
         except: return []
 
+    def parse_affected(self, affected_list):
+        """영향 받는 벤더/제품/버전 파싱 및 한글화"""
+        results = []
+        for item in affected_list:
+            vendor = item.get('vendor', 'Unknown')
+            product = item.get('product', 'Unknown')
+            versions = []
+            
+            for v in item.get('versions', []):
+                status = v.get('status', '')
+                version = v.get('version', '')
+                less_than = v.get('lessThan', '')
+                less_than_eq = v.get('lessThanOrEqual', '')
+                
+                ver_str = ""
+                if status == "affected":
+                    if version != "0" and version != "n/a":
+                        ver_str += f"{version} 부터 "
+                    
+                    if less_than:
+                        ver_str += f"{less_than} 이전"
+                    elif less_than_eq:
+                        ver_str += f"{less_than_eq} 이하"
+                    elif not less_than and not less_than_eq and version:
+                        ver_str = f"{version} (단일 버전)"
+                    
+                    if not ver_str: ver_str = "모든 버전"
+                    versions.append(ver_str.strip())
+            
+            results.append({
+                "vendor": vendor,
+                "product": product,
+                "versions": ", ".join(versions) if versions else "정보 없음"
+            })
+        return results
+
     def enrich_cve(self, cve_id):
-        """CVE 상세 정보 (CWE, References 추가)"""
         try:
             parts = cve_id.split('-')
             year, id_num = parts[1], parts[2]
@@ -67,7 +102,7 @@ class Collector:
             data = {
                 "id": cve_id, "title": "N/A", "cvss": 0.0, 
                 "description": "N/A", "state": "UNKNOWN",
-                "cwe": [], "references": []
+                "cwe": [], "references": [], "affected": []
             }
             
             if res.status_code == 200:
@@ -76,6 +111,9 @@ class Collector:
                 
                 data['state'] = json_data.get('cveMetadata', {}).get('state', 'UNKNOWN')
                 data['title'] = cna.get('title', 'N/A')
+                
+                # Affected Products 파싱
+                data['affected'] = self.parse_affected(cna.get('affected', []))
                 
                 # Description
                 try:
@@ -97,17 +135,16 @@ class Collector:
                             data['cvss'] = m['cvssV3_0'].get('baseScore', 0.0); break
                 except: pass
 
-                # [추가] CWE (Problem Types)
+                # CWE
                 try:
                     pts = cna.get('problemTypes', [])
                     for pt in pts:
                         for desc in pt.get('descriptions', []):
-                            # cweId가 있으면 가져오고 없으면 description 가져옴
                             cwe_id = desc.get('cweId', desc.get('description', ''))
                             if cwe_id: data['cwe'].append(cwe_id)
                 except: pass
 
-                # [추가] References
+                # References
                 try:
                     for ref in cna.get('references', []):
                         if 'url' in ref: data['references'].append(ref['url'])
@@ -115,4 +152,4 @@ class Collector:
 
             return data
         except: 
-            return {"id": cve_id, "title": "Error", "cvss": 0.0, "description": "Error", "state": "ERROR", "cwe": [], "references": []}
+            return {"id": cve_id, "title": "Error", "cvss": 0.0, "description": "Error", "state": "ERROR", "cwe": [], "references": [], "affected": []}

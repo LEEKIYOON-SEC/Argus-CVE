@@ -13,6 +13,15 @@ class SlackNotifier:
         display_desc = cve_data.get('desc_ko', cve_data.get('summary_ko', cve_data['description']))
         cwe_info = ", ".join(cve_data.get('cwe', [])) if cve_data.get('cwe') else "N/A"
 
+        # [추가] Vendor/Product 정보 포맷팅
+        affected_info = "N/A"
+        if cve_data.get('affected'):
+            # 첫 번째 영향받는 자산만 표시 (너무 길어지는 것 방지)
+            first = cve_data['affected'][0]
+            affected_info = f"*Vendor:* {first['vendor']}\n*Product:* {first['product']}\n*Versions:* {first['versions']}"
+            if len(cve_data['affected']) > 1:
+                affected_info += f"\n(외 {len(cve_data['affected'])-1}건)"
+
         blocks = [
             {
                 "type": "header",
@@ -21,7 +30,8 @@ class SlackNotifier:
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Title:*\n{display_title}"}
+                    {"type": "mrkdwn", "text": f"*Title:*\n{display_title}"},
+                    {"type": "mrkdwn", "text": f"{affected_info}"} # Vendor 정보 추가
                 ]
             },
             {
@@ -29,7 +39,6 @@ class SlackNotifier:
                 "fields": [
                     {"type": "mrkdwn", "text": f"*CVSS:*\n{cve_data['cvss']}"},
                     {"type": "mrkdwn", "text": f"*EPSS:*\n{cve_data['epss']*100:.2f}%"},
-                    # [복구] KEV 필드 재추가 (절대 삭제 금지)
                     {"type": "mrkdwn", "text": f"*KEV:*\n{'✅ YES' if cve_data['is_kev'] else '❌ No'}"},
                     {"type": "mrkdwn", "text": f"*CWE:*\n{cwe_info}"},
                 ]

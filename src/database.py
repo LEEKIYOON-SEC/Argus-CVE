@@ -18,7 +18,7 @@ class ArgusDB:
         file_path = f"{cve_id}.html"
         bucket = "reports"
         
-        # [디자인 업그레이드] Modern CSS Dashboard Style
+        # [디자인 혁신] 테이블 기반 레이아웃 & 시각적 강조
         html_template = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -27,25 +27,37 @@ class ArgusDB:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{cve_id} Analysis Report</title>
     <style>
-        :root {{ --primary: #2563eb; --danger: #dc2626; --warning: #d97706; --success: #059669; --bg: #f3f4f6; --card: #ffffff; --text: #1f2937; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; }}
-        .container {{ max-width: 900px; margin: 0 auto; }}
-        .header {{ background: var(--card); padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; border-left: 5px solid var(--primary); }}
-        .header h1 {{ margin: 0; font-size: 24px; color: #111; }}
-        .header .meta {{ font-size: 14px; color: #6b7280; margin-top: 5px; }}
-        .card {{ background: var(--card); padding: 25px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }}
-        .card h2 {{ margin-top: 0; font-size: 18px; border-bottom: 2px solid #f3f4f6; padding-bottom: 10px; color: var(--primary); }}
-        .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: white; margin-right: 5px; }}
-        .badge-red {{ background-color: var(--danger); }}
-        .badge-orange {{ background-color: var(--warning); }}
-        .badge-green {{ background-color: var(--success); }}
-        .badge-gray {{ background-color: #6b7280; }}
-        code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 3px; color: #e11d48; font-family: monospace; }}
-        ul {{ padding-left: 20px; }}
-        li {{ margin-bottom: 5px; }}
-        a {{ color: var(--primary); text-decoration: none; }}
+        :root {{ --primary: #1e40af; --secondary: #3b82f6; --danger: #ef4444; --bg: #f8fafc; --text: #334155; }}
+        body {{ font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif; line-height: 1.6; background: var(--bg); color: var(--text); padding: 20px; max-width: 900px; margin: 0 auto; }}
+        
+        /* 헤더 스타일 */
+        .header {{ background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-left: 6px solid var(--primary); margin-bottom: 25px; }}
+        .header h1 {{ margin: 0 0 10px 0; font-size: 26px; color: #0f172a; }}
+        .meta-tag {{ display: inline-block; background: #e2e8f0; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; margin-right: 8px; color: #475569; }}
+        
+        /* 카드 스타일 */
+        .card {{ background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+        .card-title {{ font-size: 18px; font-weight: 700; color: var(--primary); border-bottom: 2px solid #f1f5f9; padding-bottom: 12px; margin-bottom: 20px; }}
+        
+        /* AI 분석 테이블 스타일 */
+        .ai-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+        .ai-table th {{ width: 20%; background: #f8fafc; padding: 12px; text-align: left; color: #64748b; font-weight: 600; border-bottom: 1px solid #e2e8f0; vertical-align: top; }}
+        .ai-table td {{ padding: 12px; border-bottom: 1px solid #e2e8f0; color: #334155; }}
+        
+        /* 대응 방안 박스 */
+        .mitigation-box {{ background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 20px; }}
+        .mitigation-item {{ margin-bottom: 10px; display: flex; align-items: start; }}
+        .mitigation-icon {{ margin-right: 10px; color: var(--secondary); font-weight: bold; }}
+        
+        /* 배지 시스템 */
+        .badge {{ display: inline-flex; align-items: center; px: 2.5; py: 0.5; border-radius: 9999px; font-size: 12px; font-weight: 600; color: white; padding: 4px 10px; margin-right: 5px; }}
+        .bg-red {{ background-color: var(--danger); }}
+        .bg-orange {{ background-color: #f97316; }}
+        .bg-green {{ background-color: #10b981; }}
+        .bg-gray {{ background-color: #64748b; }}
+        
+        a {{ color: var(--secondary); text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
-        .ref-box {{ background: #f8fafc; padding: 10px; border-radius: 5px; font-size: 13px; border: 1px solid #e2e8f0; }}
     </style>
 </head>
 <body>

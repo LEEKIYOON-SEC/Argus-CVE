@@ -2,7 +2,7 @@ import os
 import datetime
 import time
 from google import genai
-from google.genai import types # [추가] 설정 타입 임포트
+from google.genai import types
 from collector import Collector
 from database import ArgusDB
 from notifier import SlackNotifier
@@ -20,111 +20,104 @@ def is_target_asset(cve_description, cve_id):
     return False, None
 
 def generate_korean_summary(cve_data):
-    """슬랙용 요약 (안전 필터 완화 적용)"""
+    """슬랙용 요약 (안전 필터 완화)"""
     prompt = f"""
     Role: Security Expert.
     Task: Translate Title and Summarize Description into Korean (Max 3 lines).
-    
-    [Input]
-    Title: {cve_data['title']}
-    Desc: {cve_data['description']}
-    
-    [STRICT RULES]
-    1. DO NOT translate technical acronyms (SSRF, XSS, RCE, SQLi).
-    2. Format:
-       제목: [Korean Title]
-       내용: [Korean Summary]
-    3. No intro/outro text.
+    [Input] Title: {cve_data['title']} / Desc: {cve_data['description']}
+    [Rules] 1. No intro/outro. 2. Format: 제목: [KR Title] \n 내용: [KR Summary]
     """
     try:
-        # [수정] 안전 설정 추가 (보안 분석 내용은 차단하지 않도록)
         response = client.models.generate_content(
-            model=config.MODEL_PHASE_0, 
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                safety_settings=[
-                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                ]
-            )
+            model=config.MODEL_PHASE_0, contents=prompt,
+            config=types.GenerateContentConfig(safety_settings=[types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")])
         )
         return response.text.strip()
-    except Exception as e:
-        # 실패 시 로그에 원인 출력
-        print(f"[WARN] Summary Gen Failed: {e}")
-        return f"제목: {cve_data['title']}\n내용: {cve_data['description'][:200]}"
+    except: return f"제목: {cve_data['title']}\n내용: {cve_data['description'][:200]}"
 
 def generate_report_content(cve_data, reason):
-    """HTML 리포트 본문 생성"""
+    """HTML 리포트 본문 생성 (테이블 레이아웃 적용)"""
     cwe_str = ", ".join(cve_data['cwe']) if cve_data['cwe'] else "N/A"
-    ref_list = "".join([f"<li><a href='{r}' target='_blank'>{r[:60]}...</a></li>" for r in cve_data['references']])
+    ref_list = "".join([f"<li><a href='{r}' target='_blank'>{r[:80]}...</a></li>" for r in cve_data['references']])
     
     score = cve_data['cvss']
-    badge_color = "badge-gray"
-    if score >= 9.0: badge_color = "badge-red"
-    elif score >= 7.0: badge_color = "badge-orange"
-    elif score >= 4.0: badge_color = "badge-green"
+    badge_color = "bg-gray"
+    if score >= 9.0: badge_color = "bg-red"
+    elif score >= 7.0: badge_color = "bg-orange"
+    elif score >= 4.0: badge_color = "bg-green"
 
+    # Affected Table Rows 생성
+    affected_html = ""
+    for item in cve_data.get('affected', []):
+        affected_html += f"<tr><th>Vendor</th><td>{item['vendor']}</td></tr><tr><th>Product</th><td>{item['product']}</td></tr><tr><th>Affected</th><td>{item['versions']}</td></tr>"
+
+    # AI에게 HTML Table Row 포맷 요구
     prompt = f"""
-    Role: Cyber Threat Intelligence Analyst.
-    Task: Create a detailed vulnerability report in KOREAN HTML format content.
+    Role: Security Analyst.
+    Task: Create HTML content for vulnerability report.
+    [Data] Title: {cve_data['title']} / Desc: {cve_data['description']}
     
-    [Data]
-    ID: {cve_data['id']}
-    Title: {cve_data['title']}
-    Desc: {cve_data['description']}
-    CWE: {cwe_str}
-    
-    [Rules]
-    1. Language: Professional Korean.
-    2. Terminology: Keep standard terms (SSRF, XSS, RCE).
-    3. Output: Provide ONLY the inner HTML content (<h3>, <p>, <ul>).
+    [Format Requirement]
+    Return ONLY valid HTML tags (without <html>, <body>).
+    Use this structure:
+    <tr><th>요약</th><td>[Korean Summary]</td></tr>
+    <tr><th>공격 벡터</th><td>[Attack Vector Analysis]</td></tr>
+    <tr><th>영향도</th><td>[Potential Impact]</td></tr>
     """
     
-    ai_body = ""
+    ai_table_rows = "<tr><th>분석 실패</th><td>AI 응답 없음</td></tr>"
+    ai_mitigation = "<li>정보 없음</li>"
+    
     try:
-        # [수정] 리포트 생성 시에도 안전 설정 적용
         response = client.models.generate_content(
-            model=config.MODEL_PHASE_0, 
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                safety_settings=[
-                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                ]
-            )
+            model=config.MODEL_PHASE_0, contents=prompt,
+            config=types.GenerateContentConfig(safety_settings=[types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")])
         )
-        ai_body = response.text.replace("```html", "").replace("```", "").strip()
-    except Exception as e:
-        print(f"[ERR] Report Gen Failed: {e}")
-        ai_body = f"<p style='color:red'>AI 분석 실패 (Error Reason: {str(e)})</p>"
+        ai_table_rows = response.text.replace("```html", "").replace("```", "").strip()
+        
+        # 대응 방안 별도 생성 (리스트 포맷)
+        mitigation_prompt = f"Suggest mitigation steps for {cve_data['title']} in Korean HTML <li> format. No markdown."
+        res_mit = client.models.generate_content(model=config.MODEL_PHASE_0, contents=mitigation_prompt)
+        ai_mitigation = res_mit.text.replace("```html", "").replace("```", "").strip()
+    except: pass
 
     return f"""
     <div class="header">
-        <h1>🛡️ {cve_data['id']} : {cve_data['title_ko']}</h1>
-        <div class="meta">Detected: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} | Reason: {reason}</div>
+        <span class="meta-tag">Detected: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
+        <span class="meta-tag">Reason: {reason}</span>
+        <h1>🛡️ {cve_data['title_ko']}</h1>
+        <div style="margin-top:10px;">
+            <span class="badge {badge_color}">CVSS {score}</span>
+            <span class="badge bg-gray">EPSS {cve_data['epss']*100:.2f}%</span>
+            <span class="badge {'bg-red' if cve_data['is_kev'] else 'bg-gray'}">KEV {'YES' if cve_data['is_kev'] else 'No'}</span>
+            <span class="badge bg-gray">{cwe_str}</span>
+        </div>
     </div>
 
     <div class="card">
-        <h2>📊 Risk Assessment</h2>
-        <span class="badge {badge_color}">CVSS: {score}</span>
-        <span class="badge badge-gray">EPSS: {cve_data['epss']*100:.2f}%</span>
-        <span class="badge {'badge-red' if cve_data['is_kev'] else 'badge-gray'}">KEV: {'YES' if cve_data['is_kev'] else 'No'}</span>
-        <p><strong>CWE:</strong> {cwe_str}</p>
+        <div class="card-title">📦 Affected Assets</div>
+        <table class="ai-table">
+            {affected_html if affected_html else "<tr><td>정보 없음</td></tr>"}
+        </table>
     </div>
 
     <div class="card">
-        <h2>🤖 AI Intelligence Analysis</h2>
-        {ai_body}
+        <div class="card-title">🔍 Vulnerability Analysis</div>
+        <table class="ai-table">
+            {ai_table_rows}
+        </table>
     </div>
 
     <div class="card">
-        <h2>🔗 References</h2>
-        <ul class="ref-box">
+        <div class="card-title">🛡️ Mitigation Strategies</div>
+        <div class="mitigation-box">
+            <ul>{ai_mitigation}</ul>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">🔗 References</div>
+        <ul style="font-size:13px; color:#64748b;">
             {ref_list if ref_list else "<li>No references provided.</li>"}
         </ul>
     </div>
@@ -151,7 +144,8 @@ def main():
                 "id": cve_id, "title": raw_data['title'], "cvss": raw_data['cvss'],
                 "is_kev": cve_id in collector.kev_set, "epss": collector.epss_cache.get(cve_id, 0.0),
                 "description": raw_data['description'],
-                "cwe": raw_data['cwe'], "references": raw_data['references']
+                "cwe": raw_data['cwe'], "references": raw_data['references'],
+                "affected": raw_data['affected'] # 추가됨
             }
             
             last_record = db.get_cve(cve_id)
