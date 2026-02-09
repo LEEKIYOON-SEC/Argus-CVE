@@ -34,7 +34,7 @@ class Collector:
         except Exception as e:
             print(f"[WARN] EPSS fetch failed: {e}")
 
-    def fetch_recent_cves(self, hours=2):
+    def fetch_recent_cves(self, hours=100):
         """cve.org에서 최근 변경된 PUBLISHED CVE 조회"""
         now = datetime.datetime.now(pytz.UTC)
         start_time = now - datetime.timedelta(hours=hours)
