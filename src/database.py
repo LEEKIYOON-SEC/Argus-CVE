@@ -25,7 +25,7 @@ class ArgusDB:
         self.client.storage.from_(bucket).upload(
             file_path, 
             content.encode('utf-8'), 
-            {"content-type": "text/markdown", "x-upsert": "true"}
+            {"content-type": "text/markdown; charset=utf-8", "x-upsert": "true"}
         )
         
         # 30일 유효한 Signed URL 생성
