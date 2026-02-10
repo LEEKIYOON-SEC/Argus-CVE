@@ -106,10 +106,10 @@ class Collector:
                             break
                 except: pass
                 
-                # [수정] CVSS 점수 및 Vector String 수집
                 try:
                     metrics = cna.get('metrics', [])
                     for m in metrics:
+                        # V3.1, V3.0, V4.0 순서로 파싱
                         if 'cvssV4_0' in m: 
                             data['cvss'] = m['cvssV4_0'].get('baseScore', 0.0)
                             data['cvss_vector'] = m['cvssV4_0'].get('vectorString', 'N/A')
