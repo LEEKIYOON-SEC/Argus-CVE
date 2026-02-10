@@ -35,6 +35,7 @@ def is_target_asset(cve_description, cve_id):
     return False, None
 
 def generate_korean_summary(cve_data):
+    """슬랙용 한글 요약"""
     prompt = f"""
     Task: Translate Title and Summarize Description into Korean.
     [Input] Title: {cve_data['title']} / Desc: {cve_data['description']}
@@ -114,15 +115,19 @@ def create_github_issue(cve_data, reason):
     cwe_str = ", ".join(cve_data['cwe']) if cve_data['cwe'] else "N/A"
     cce_str = ", ".join(cve_data['cce']) if cve_data['cce'] else "N/A"
     
+    # [최종 수정] 뱃지 색상 HEX 코드로 통일
     score = cve_data['cvss']
-    color = "lightgrey"
-    if score >= 9.0: color = "FF0000" # 9.0 이상 빨강
-    elif score >= 7.0: color = "orange"
-    elif score >= 4.0: color = "yellow"
-    elif score > 0: color = "brightgreen"
+    color = "CCCCCC" # 기본 회색
     
-    # [수정] 뱃지 URL 공백 제거 및 인코딩 방지
-    badges = f"![CVSS](https://img.shields.io/badge/CVSS-{score}-{color}) ![EPSS](https://img.shields.io/badge/EPSS-{cve_data['epss']*100:.2f}%25-blue) ![KEV](https://img.shields.io/badge/KEV-{'YES' if cve_data['is_kev'] else 'No'}-{'red' if cve_data['is_kev'] else 'lightgrey'})"
+    if score >= 9.0: color = "FF0000"     # Critical: 강렬한 빨강
+    elif score >= 7.0: color = "FD7E14"   # High: 주황
+    elif score >= 4.0: color = "FFC107"   # Medium: 노랑 (Amber)
+    elif score > 0: color = "28A745"      # Low: 초록
+    
+    # KEV 뱃지 색상 (빨강 vs 회색)
+    kev_color = "FF0000" if cve_data['is_kev'] else "CCCCCC"
+    
+    badges = f"![CVSS](https://img.shields.io/badge/CVSS-{score}-{color}) ![EPSS](https://img.shields.io/badge/EPSS-{cve_data['epss']*100:.2f}%25-blue) ![KEV](https://img.shields.io/badge/KEV-{'YES' if cve_data['is_kev'] else 'No'}-{kev_color})"
 
     affected_rows = ""
     for item in cve_data.get('affected', []):
@@ -133,8 +138,7 @@ def create_github_issue(cve_data, reason):
     ref_list = "\n".join([f"- {r}" for r in cve_data['references']])
     vector_details = parse_cvss_vector(cve_data.get('cvss_vector', 'N/A'))
 
-    # [핵심 수정] textwrap.dedent를 사용하여 들여쓰기 문제를 원천 차단
-    # 마크다운 본문을 맨 앞으로 당겨서 작성
+    # Markdown 본문 (들여쓰기 제거 상태 유지)
     body = f"""# 🛡️ {cve_data['title_ko']}
 
 > **Detected:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
