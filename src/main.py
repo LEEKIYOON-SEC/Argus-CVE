@@ -116,7 +116,7 @@ def create_github_issue(cve_data, reason):
     
     score = cve_data['cvss']
     color = "lightgrey"
-    if score >= 9.0: color = "red" # 9.0 이상 빨강
+    if score >= 9.0: color = "FF0000" # 9.0 이상 빨강
     elif score >= 7.0: color = "orange"
     elif score >= 4.0: color = "yellow"
     elif score > 0: color = "green"
