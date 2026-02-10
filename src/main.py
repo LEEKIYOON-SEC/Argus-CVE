@@ -21,9 +21,8 @@ def is_target_asset(cve_description, cve_id):
     return False, None
 
 def generate_korean_summary(cve_data):
-    """슬랙용 요약 (안전한 텍스트 파싱 방식)"""
+    """슬랙용 한글 요약 (텍스트 파싱)"""
     prompt = f"""
-    Role: Security Expert.
     Task: Translate Title and Summarize Description into Korean.
     [Input] Title: {cve_data['title']} / Desc: {cve_data['description']}
     [Format]
@@ -40,21 +39,17 @@ def generate_korean_summary(cve_data):
         text = response.text.strip()
         title_ko = cve_data['title']
         desc_ko = cve_data['description'][:200]
-        
         for line in text.split('\n'):
             if line.startswith("제목:"): title_ko = line.replace("제목:", "").strip()
             if line.startswith("내용:"): desc_ko = line.replace("내용:", "").strip()
-            
         return title_ko, desc_ko
     except:
         return cve_data['title'], cve_data['description'][:200]
 
 def generate_report_content(cve_data, reason):
-    """
-    HTML 리포트 본문 생성
-    [수정] JSON Schema를 적용하여 AI가 내용을 비우거나 포맷을 깨뜨리는 것을 방지
-    """
+    """HTML 리포트 본문 생성 (JSON Schema 강제)"""
     cwe_str = ", ".join(cve_data['cwe']) if cve_data['cwe'] else "N/A"
+    cce_str = ", ".join(cve_data['cce']) if cve_data['cce'] else "N/A" # CCE 추가
     ref_list = "".join([f"<li><a href='{r}' target='_blank'>{r[:80]}...</a></li>" for r in cve_data['references']])
     
     score = cve_data['cvss']
@@ -63,36 +58,29 @@ def generate_report_content(cve_data, reason):
     elif score >= 7.0: badge_color = "bg-orange"
     elif score >= 4.0: badge_color = "bg-green"
 
-    # Affected Assets HTML
     affected_html = ""
     for item in cve_data.get('affected', []):
         affected_html += f"<tr><th>Vendor</th><td>{item['vendor']}</td></tr><tr><th>Product</th><td>{item['product']}</td></tr><tr><th>Affected</th><td>{item['versions']}</td></tr>"
 
-    # [핵심] JSON 스키마 강제 적용
     prompt = f"""
     Analyze this CVE in Korean.
     Title: {cve_data['title']}
     Desc: {cve_data['description']}
     """
     
-    # 기본값
-    ai_summary = "분석 대기 중"
-    ai_vector = "정보 없음"
-    ai_impact = "정보 없음"
-    ai_mitigation_html = "<li>정보 없음</li>"
+    ai_summary, ai_vector, ai_impact, ai_mitigation_html = "분석 대기", "정보 없음", "정보 없음", "<li>정보 없음</li>"
     
     try:
         response = client.models.generate_content(
-            model=config.MODEL_PHASE_0,
-            contents=prompt,
+            model=config.MODEL_PHASE_0, contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema={
                     "type": "OBJECT",
                     "properties": {
-                        "summary": {"type": "STRING", "description": "1-2 lines summary"},
-                        "vector": {"type": "STRING", "description": "Attack vector analysis"},
-                        "impact": {"type": "STRING", "description": "Potential impact"},
+                        "summary": {"type": "STRING"},
+                        "vector": {"type": "STRING"},
+                        "impact": {"type": "STRING"},
                         "mitigation": {"type": "ARRAY", "items": {"type": "STRING"}}
                     },
                     "required": ["summary", "vector", "impact", "mitigation"]
@@ -100,20 +88,15 @@ def generate_report_content(cve_data, reason):
                 safety_settings=[types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")]
             )
         )
-        
         data = json.loads(response.text)
-        ai_summary = data.get("summary", "분석 실패")
-        ai_vector = data.get("vector", "정보 없음")
-        ai_impact = data.get("impact", "정보 없음")
-        
-        mit_list = data.get("mitigation", [])
-        if mit_list:
-            ai_mitigation_html = "".join([f"<li>{step}</li>" for step in mit_list])
+        ai_summary = data.get("summary", "-")
+        ai_vector = data.get("vector", "-")
+        ai_impact = data.get("impact", "-")
+        if data.get("mitigation"):
+            ai_mitigation_html = "".join([f"<li>{step}</li>" for step in data["mitigation"]])
             
-    except Exception as e:
-        print(f"[WARN] AI Analysis Failed: {e}")
+    except Exception as e: print(f"[WARN] AI Analysis Failed: {e}")
 
-    # Python이 HTML 조립
     return f"""
     <div class="header">
         <span class="meta-tag">Detected: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
@@ -124,14 +107,13 @@ def generate_report_content(cve_data, reason):
             <span class="badge bg-gray">EPSS {cve_data['epss']*100:.2f}%</span>
             <span class="badge {'bg-red' if cve_data['is_kev'] else 'bg-gray'}">KEV {'YES' if cve_data['is_kev'] else 'No'}</span>
             <span class="badge bg-gray">{cwe_str}</span>
+            <span class="badge bg-gray">{cce_str}</span>
         </div>
     </div>
 
     <div class="card">
         <div class="card-title">📦 Affected Assets</div>
-        <table class="ai-table">
-            {affected_html if affected_html else "<tr><td>정보 없음</td></tr>"}
-        </table>
+        <table class="ai-table">{affected_html if affected_html else "<tr><td>정보 없음</td></tr>"}</table>
     </div>
 
     <div class="card">
@@ -145,16 +127,12 @@ def generate_report_content(cve_data, reason):
 
     <div class="card">
         <div class="card-title">🛡️ Mitigation Strategies</div>
-        <div class="mitigation-box">
-            <ul>{ai_mitigation_html}</ul>
-        </div>
+        <div class="mitigation-box"><ul>{ai_mitigation_html}</ul></div>
     </div>
 
     <div class="card">
         <div class="card-title">🔗 References</div>
-        <ul style="font-size:13px; color:#64748b;">
-            {ref_list if ref_list else "<li>No references provided.</li>"}
-        </ul>
+        <ul style="font-size:13px; color:#64748b;">{ref_list if ref_list else "<li>No references provided.</li>"}</ul>
     </div>
     """
 
@@ -180,7 +158,7 @@ def main():
                 "is_kev": cve_id in collector.kev_set, "epss": collector.epss_cache.get(cve_id, 0.0),
                 "description": raw_data['description'],
                 "cwe": raw_data['cwe'], "references": raw_data['references'],
-                "affected": raw_data['affected']
+                "affected": raw_data['affected'], "cce": raw_data['cce']
             }
             
             last_record = db.get_cve(cve_id)
@@ -194,15 +172,12 @@ def main():
 
             if should_alert:
                 print(f"[!] 알림 발송: {cve_id}")
-                
                 title_ko, desc_ko = generate_korean_summary(current_state)
                 current_state['title_ko'] = title_ko
                 current_state['desc_ko'] = desc_ko
-                
                 report_content = generate_report_content(current_state, alert_reason)
                 report_url = db.upload_report(cve_id, report_content)
                 notifier.send_alert(current_state, alert_reason, report_url['signedURL'])
-                
                 db.upsert_cve({
                     "id": cve_id, "cvss_score": current_state['cvss'], "epss_score": current_state['epss'],
                     "is_kev": current_state['is_kev'], "last_alert_at": datetime.datetime.now().isoformat(),

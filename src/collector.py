@@ -3,7 +3,7 @@ import datetime
 import pytz
 import os
 import re
-import json # json 모듈 추가
+import json
 
 class Collector:
     def __init__(self):
@@ -88,7 +88,7 @@ class Collector:
             data = {
                 "id": cve_id, "title": "N/A", "cvss": 0.0, 
                 "description": "N/A", "state": "UNKNOWN",
-                "cwe": [], "references": [], "affected": [], "cce": [] # CCE 필드 추가
+                "cwe": [], "references": [], "affected": [], "cce": [] # CCE 필드 준비
             }
             
             if res.status_code == 200:
@@ -99,7 +99,6 @@ class Collector:
                 data['title'] = cna.get('title', 'N/A')
                 data['affected'] = self.parse_affected(cna.get('affected', []))
                 
-                # Description
                 try:
                     for d in cna.get('descriptions', []):
                         if d.get('lang') == 'en':
@@ -107,7 +106,6 @@ class Collector:
                             break
                 except: pass
                 
-                # CVSS
                 try:
                     metrics = cna.get('metrics', [])
                     for m in metrics:
@@ -116,7 +114,6 @@ class Collector:
                         elif 'cvssV3_0' in m: data['cvss'] = m['cvssV3_0'].get('baseScore', 0.0); break
                 except: pass
 
-                # CWE
                 try:
                     pts = cna.get('problemTypes', [])
                     for pt in pts:
@@ -125,18 +122,16 @@ class Collector:
                             if cwe_id: data['cwe'].append(cwe_id)
                 except: pass
 
-                # References
                 try:
                     for ref in cna.get('references', []):
                         if 'url' in ref: data['references'].append(ref['url'])
                 except: pass
 
-                # [추가] CCE 추출 (전체 JSON 문자열에서 정규식 검색)
-                # CCE는 명시적 필드보다 설명이나 참조에 섞여 있는 경우가 많음
+                # [미래 대비] CCE 자동 추출 로직 (데이터가 없으면 빈 리스트 유지)
                 json_str = json.dumps(json_data)
                 cce_matches = re.findall(r'(CCE-\d{4,}-\d+)', json_str)
                 if cce_matches:
-                    data['cce'] = list(set(cce_matches)) # 중복 제거
+                    data['cce'] = list(set(cce_matches))
 
             return data
         except: 
