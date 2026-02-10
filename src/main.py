@@ -2,6 +2,7 @@ import os
 import datetime
 import time
 import json
+import requests
 from google import genai
 from google.genai import types
 from collector import Collector
@@ -32,59 +33,45 @@ def generate_korean_summary(cve_data):
     """
     try:
         response = client.models.generate_content(
-            model=config.MODEL_PHASE_0, 
-            contents=prompt,
+            model=config.MODEL_PHASE_0, contents=prompt,
             config=types.GenerateContentConfig(safety_settings=[types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")])
         )
         text = response.text.strip()
-        title_ko = cve_data['title']
-        desc_ko = cve_data['description'][:200]
+        title_ko, desc_ko = cve_data['title'], cve_data['description'][:200]
         for line in text.split('\n'):
             if line.startswith("제목:"): title_ko = line.replace("제목:", "").strip()
             if line.startswith("내용:"): desc_ko = line.replace("내용:", "").strip()
         return title_ko, desc_ko
-    except:
-        return cve_data['title'], cve_data['description'][:200]
+    except: return cve_data['title'], cve_data['description'][:200]
 
-def generate_report_content(cve_data, reason):
-    """HTML 리포트 본문 생성 (JSON Schema 강제)"""
-    cwe_str = ", ".join(cve_data['cwe']) if cve_data['cwe'] else "N/A"
-    cce_str = ", ".join(cve_data['cce']) if cve_data['cce'] else "N/A" # CCE 추가
-    ref_list = "".join([f"<li><a href='{r}' target='_blank'>{r[:80]}...</a></li>" for r in cve_data['references']])
-    
-    score = cve_data['cvss']
-    badge_color = "bg-gray"
-    if score >= 9.0: badge_color = "bg-red"
-    elif score >= 7.0: badge_color = "bg-orange"
-    elif score >= 4.0: badge_color = "bg-green"
+def create_github_issue(cve_data, reason):
+    """
+    [New] GitHub Issue를 생성하고 해당 URL 반환 (무조건 렌더링 성공)
+    """
+    token = os.environ.get("GH_TOKEN")
+    repo = os.environ.get("GITHUB_REPOSITORY") # 예: user/repo
+    if not repo: return None
 
-    affected_html = ""
-    for item in cve_data.get('affected', []):
-        affected_html += f"<tr><th>Vendor</th><td>{item['vendor']}</td></tr><tr><th>Product</th><td>{item['product']}</td></tr><tr><th>Affected</th><td>{item['versions']}</td></tr>"
-
+    # 1. AI 분석 (JSON)
     prompt = f"""
     Analyze this CVE in Korean.
     Title: {cve_data['title']}
     Desc: {cve_data['description']}
+    
+    Output JSON:
+    {{
+        "summary": "Detailed summary",
+        "vector": "Attack vector",
+        "impact": "Impact",
+        "mitigation": ["Step 1", "Step 2"]
+    }}
     """
-    
-    ai_summary, ai_vector, ai_impact, ai_mitigation_html = "분석 대기", "정보 없음", "정보 없음", "<li>정보 없음</li>"
-    
+    ai_summary, ai_vector, ai_impact, ai_mitigation = "분석 대기", "-", "-", ["정보 없음"]
     try:
         response = client.models.generate_content(
             model=config.MODEL_PHASE_0, contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema={
-                    "type": "OBJECT",
-                    "properties": {
-                        "summary": {"type": "STRING"},
-                        "vector": {"type": "STRING"},
-                        "impact": {"type": "STRING"},
-                        "mitigation": {"type": "ARRAY", "items": {"type": "STRING"}}
-                    },
-                    "required": ["summary", "vector", "impact", "mitigation"]
-                },
                 safety_settings=[types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")]
             )
         )
@@ -92,49 +79,67 @@ def generate_report_content(cve_data, reason):
         ai_summary = data.get("summary", "-")
         ai_vector = data.get("vector", "-")
         ai_impact = data.get("impact", "-")
-        if data.get("mitigation"):
-            ai_mitigation_html = "".join([f"<li>{step}</li>" for step in data["mitigation"]])
-            
-    except Exception as e: print(f"[WARN] AI Analysis Failed: {e}")
+        ai_mitigation = data.get("mitigation", [])
+    except: pass
 
-    return f"""
-    <div class="header">
-        <span class="meta-tag">Detected: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
-        <span class="meta-tag">Reason: {reason}</span>
-        <h1>🛡️ {cve_data['title_ko']}</h1>
-        <div style="margin-top:10px;">
-            <span class="badge {badge_color}">CVSS {score}</span>
-            <span class="badge bg-gray">EPSS {cve_data['epss']*100:.2f}%</span>
-            <span class="badge {'bg-red' if cve_data['is_kev'] else 'bg-gray'}">KEV {'YES' if cve_data['is_kev'] else 'No'}</span>
-            <span class="badge bg-gray">{cwe_str}</span>
-            <span class="badge bg-gray">{cce_str}</span>
-        </div>
-    </div>
+    # 2. Markdown 본문 작성 (GitHub 스타일)
+    cwe_str = ", ".join(cve_data['cwe']) if cve_data['cwe'] else "N/A"
+    cce_str = ", ".join(cve_data['cce']) if cve_data['cce'] else "N/A"
+    
+    # 뱃지 (Shields.io)
+    score = cve_data['cvss']
+    color = "lightgrey"
+    if score >= 9.0: color = "critical"
+    elif score >= 7.0: color = "orange"
+    elif score >= 4.0: color = "yellow"
+    elif score > 0: color = "green"
+    
+    badges = f"![CVSS](https://img.shields.io/badge/CVSS-{score}-{color}) ![EPSS](https://img.shields.io/badge/EPSS-{cve_data['epss']*100:.2f}%25-blue) ![KEV](https://img.shields.io/badge/KEV-{'YES' if cve_data['is_kev'] else 'No'}-{'red' if cve_data['is_kev'] else 'lightgrey'})"
 
-    <div class="card">
-        <div class="card-title">📦 Affected Assets</div>
-        <table class="ai-table">{affected_html if affected_html else "<tr><td>정보 없음</td></tr>"}</table>
-    </div>
+    affected_rows = "| Vendor | Product | Versions |\n|---|---|---|\n"
+    for item in cve_data.get('affected', []):
+        affected_rows += f"| {item['vendor']} | {item['product']} | {item['versions']} |\n"
 
-    <div class="card">
-        <div class="card-title">🔍 Vulnerability Analysis</div>
-        <table class="ai-table">
-            <tr><th>요약</th><td>{ai_summary}</td></tr>
-            <tr><th>공격 벡터</th><td>{ai_vector}</td></tr>
-            <tr><th>영향도</th><td>{ai_impact}</td></tr>
-        </table>
-    </div>
+    mitigation_list = "\n".join([f"- {m}" for m in ai_mitigation])
+    ref_list = "\n".join([f"- {r}" for r in cve_data['references']])
 
-    <div class="card">
-        <div class="card-title">🛡️ Mitigation Strategies</div>
-        <div class="mitigation-box"><ul>{ai_mitigation_html}</ul></div>
-    </div>
+    body = f"""
+# 🛡️ {cve_data['title_ko']}
 
-    <div class="card">
-        <div class="card-title">🔗 References</div>
-        <ul style="font-size:13px; color:#64748b;">{ref_list if ref_list else "<li>No references provided.</li>"}</ul>
-    </div>
+> **Detected:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}  
+> **Reason:** {reason}
+
+{badges}
+**CWE:** {cwe_str} | **CCE:** {cce_str}
+
+## 📦 영향 받는 자산 (Affected Assets)
+{affected_rows}
+
+## 🔍 취약점 분석 (Analysis)
+| 항목 | 내용 |
+| :--- | :--- |
+| **요약** | {ai_summary} |
+| **공격 벡터** | {ai_vector} |
+| **영향도** | {ai_impact} |
+
+## 🛡️ 대응 방안 (Mitigation)
+{mitigation_list}
+
+## 🔗 참고 자료 (References)
+{ref_list}
     """
+
+    # 3. GitHub API로 Issue 생성
+    url = f"https://api.github.com/repos/{repo}/issues"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    payload = {"title": f"[Argus] {cve_data['id']}: {cve_data['title_ko']}", "body": body, "labels": ["security", "cve"]}
+    
+    resp = requests.post(url, headers=headers, json=payload)
+    if resp.status_code == 201:
+        return resp.json().get("html_url") # 생성된 이슈 URL 반환
+    else:
+        print(f"[ERR] Issue Creation Failed: {resp.text}")
+        return None
 
 def main():
     print(f"[*] Argus Phase 0 시작 (모델: {config.MODEL_PHASE_0})")
@@ -175,9 +180,12 @@ def main():
                 title_ko, desc_ko = generate_korean_summary(current_state)
                 current_state['title_ko'] = title_ko
                 current_state['desc_ko'] = desc_ko
-                report_content = generate_report_content(current_state, alert_reason)
-                report_url = db.upload_report(cve_id, report_content)
-                notifier.send_alert(current_state, alert_reason, report_url['signedURL'])
+                
+                # [변경] GitHub Issue 생성
+                report_url = create_github_issue(current_state, alert_reason)
+                
+                notifier.send_alert(current_state, alert_reason, report_url)
+                
                 db.upsert_cve({
                     "id": cve_id, "cvss_score": current_state['cvss'], "epss_score": current_state['epss'],
                     "is_kev": current_state['is_kev'], "last_alert_at": datetime.datetime.now().isoformat(),

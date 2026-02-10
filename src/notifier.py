@@ -19,7 +19,6 @@ class SlackNotifier:
             affected_text = f"• *Vendor:* {first['vendor']}\n• *Product:* {first['product']}\n• *Versions:* {first['versions']}"
             if len(cve_data['affected']) > 1: affected_text += f"\n(외 {len(cve_data['affected'])-1}건)"
 
-        # [핵심] CCE가 있으면 표시, 없으면 숨김
         cce_list = cve_data.get('cce', [])
         cce_text = ", ".join(cce_list) if cce_list else None
 
@@ -29,9 +28,7 @@ class SlackNotifier:
             {"type": "mrkdwn", "text": f"*KEV:*\n{'✅ YES' if cve_data['is_kev'] else '❌ No'}"},
             {"type": "mrkdwn", "text": f"*CWE:*\n{cwe_info}"},
         ]
-        
-        if cce_text:
-            stats_fields.append({"type": "mrkdwn", "text": f"*CCE:*\n{cce_text}"})
+        if cce_text: stats_fields.append({"type": "mrkdwn", "text": f"*CCE:*\n{cce_text}"})
 
         blocks = [
             {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} {clean_reason}: {cve_data['id']}"}},
@@ -51,7 +48,7 @@ class SlackNotifier:
         if report_url:
             blocks.append({
                 "type": "actions",
-                "elements": [{"type": "button", "text": {"type": "plain_text", "text": "📄 상세 분석 리포트 확인 (30일 유효)"}, "url": report_url, "style": "primary"}]
+                "elements": [{"type": "button", "text": {"type": "plain_text", "text": "📄 GitHub 이슈 리포트 확인"}, "url": report_url, "style": "primary"}]
             })
 
         requests.post(self.webhook_url, json={"blocks": blocks})
