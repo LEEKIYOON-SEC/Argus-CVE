@@ -34,7 +34,7 @@ class RuleManager:
         print(f"[🔍 검증 로그] Snort/ET Open 룰셋 메모리 검색 시작: {cve_id}")
         if not self.snort_cache:
             try:
-                # print("[INFO] Snort Community Rules 다운로드 중...")
+                print("[INFO] Snort Community Rules 다운로드 중...")
                 res = requests.get("https://www.snort.org/downloads/community/community-rules.tar.gz", timeout=15)
                 if res.status_code == 200:
                     with tarfile.open(fileobj=io.BytesIO(res.content), mode="r:gz") as tar:
@@ -48,7 +48,7 @@ class RuleManager:
                 print(f"[WARN] Failed to fetch Snort Community: {e}")
 
             try:
-                # print("[INFO] ET Open Rules 다운로드 중...")
+                print("[INFO] ET Open Rules 다운로드 중...")
                 res = requests.get("https://rules.emergingthreats.net/open/snort-2.9.0/emerging-all.rules", timeout=15)
                 if res.status_code == 200:
                     self.snort_cache.append(res.text)
