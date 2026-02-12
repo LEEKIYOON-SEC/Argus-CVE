@@ -1,7 +1,6 @@
 import os
 import datetime
 import time
-import json
 import requests
 import textwrap
 from google import genai
@@ -9,13 +8,15 @@ from google.genai import types
 from collector import Collector
 from database import ArgusDB
 from notifier import SlackNotifier
+from analyzer import Analyzer
+from rule_manager import RuleManager
 import config
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# CVSS 매핑 테이블
+# (CVSS_MAP, is_target_asset 등 기존 함수 생략 - Phase 0와 동일)
 CVSS_MAP = {
-    "AV:N": "네트워크 (Network)", "AV:A": "인접 네트워크 (Adjacent)", "AV:L": "로컬 (Local)", "AV:P": "물리적 (Physical)",
+    "AV:N": "네트워크 (Network)", "AV:A": "인접 (Adjacent)", "AV:L": "로컬 (Local)", "AV:P": "물리적 (Physical)",
     "AC:L": "낮음 (Low)", "AC:H": "높음 (High)",
     "PR:N": "없음 (None)", "PR:L": "낮음 (Low)", "PR:H": "높음 (High)",
     "UI:N": "없음 (None)", "UI:R": "필수 (Required)",
@@ -35,7 +36,6 @@ def is_target_asset(cve_description, cve_id):
     return False, None
 
 def generate_korean_summary(cve_data):
-    """슬랙용 한글 요약"""
     prompt = f"""
     Task: Translate Title and Summarize Description into Korean.
     [Input] Title: {cve_data['title']} / Desc: {cve_data['description']}
@@ -81,50 +81,24 @@ def create_github_issue(cve_data, reason):
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo: return None
 
-    # AI 상세 분석
-    prompt = f"""
-    Analyze this CVE in Korean.
-    Title: {cve_data['title']}
-    Desc: {cve_data['description']}
-    
-    Output JSON (Strict):
-    {{
-        "summary": "Detailed summary",
-        "vector_analysis": "Explain attack vector scenarios details",
-        "impact": "Detailed impact analysis",
-        "mitigation": ["Step 1", "Step 2"]
-    }}
-    """
-    ai_summary, ai_vector_analysis, ai_impact, ai_mitigation = "분석 대기", "정보 없음", "정보 없음", ["정보 없음"]
-    try:
-        response = client.models.generate_content(
-            model=config.MODEL_PHASE_0, contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                safety_settings=[types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")]
-            )
-        )
-        data = json.loads(response.text)
-        ai_summary = data.get("summary", "-")
-        ai_vector_analysis = data.get("vector_analysis", "-")
-        ai_impact = data.get("impact", "-")
-        ai_mitigation = data.get("mitigation", [])
-    except: pass
+    # [Phase 1] Analyzer 호출 (Groq 심층 분석)
+    print(f"[*] Analyzing {cve_data['id']} with Groq...")
+    analyzer = Analyzer()
+    analysis_result = analyzer.analyze_cve(cve_data)
+
+    # [Phase 1] RuleManager 호출 (룰 생성)
+    print(f"[*] Generating rules for {cve_data['id']}...")
+    rule_manager = RuleManager()
+    rules = rule_manager.get_rules(cve_data, analysis_result.get('rule_feasibility', False))
 
     # 데이터 준비
     cwe_str = ", ".join(cve_data['cwe']) if cve_data['cwe'] else "N/A"
-    cce_str = ", ".join(cve_data['cce']) if cve_data['cce'] else "N/A"
-    
-    # [최종 수정] 뱃지 색상 HEX 코드로 통일
     score = cve_data['cvss']
-    color = "CCCCCC" # 기본 회색
-    
-    if score >= 9.0: color = "FF0000"     # Critical: 강렬한 빨강
-    elif score >= 7.0: color = "FD7E14"   # High: 주황
-    elif score >= 4.0: color = "FFC107"   # Medium: 노랑 (Amber)
-    elif score > 0: color = "28A745"      # Low: 초록
-    
-    # KEV 뱃지 색상 (빨강 vs 회색)
+    color = "CCCCCC"
+    if score >= 9.0: color = "FF0000"
+    elif score >= 7.0: color = "FD7E14"
+    elif score >= 4.0: color = "FFC107"
+    elif score > 0: color = "28A745"
     kev_color = "FF0000" if cve_data['is_kev'] else "CCCCCC"
     
     badges = f"![CVSS](https://img.shields.io/badge/CVSS-{score}-{color}) ![EPSS](https://img.shields.io/badge/EPSS-{cve_data['epss']*100:.2f}%25-blue) ![KEV](https://img.shields.io/badge/KEV-{'YES' if cve_data['is_kev'] else 'No'}-{kev_color})"
@@ -134,43 +108,59 @@ def create_github_issue(cve_data, reason):
         affected_rows += f"| {item['vendor']} | {item['product']} | {item['versions']} |\n"
     if not affected_rows: affected_rows = "| - | - | - |"
 
-    mitigation_list = "\n".join([f"- {m}" for m in ai_mitigation])
+    mitigation_list = "\n".join([f"- {m}" for m in analysis_result.get('mitigation', [])])
     ref_list = "\n".join([f"- {r}" for r in cve_data['references']])
     vector_details = parse_cvss_vector(cve_data.get('cvss_vector', 'N/A'))
 
-    # Markdown 본문 (들여쓰기 제거 상태 유지)
-    body = f"""# 🛡️ {cve_data['title_ko']}
+    # 룰 섹션 구성
+    rules_section = ""
+    if rules['sigma'] or rules['snort'] or rules['yara']:
+        rules_section = "## 🛡️ 탐지 룰 (Detection Rules)\n"
+        if rules['sigma']:
+            rules_section += f"### Sigma Rule ({rules['sigma']['source']})\n```yaml\n{rules['sigma']['code']}\n```\n"
+        if rules['snort']:
+            rules_section += f"### Snort Rule ({rules['snort']['source']})\n```bash\n{rules['snort']['code']}\n```\n"
+        if rules['yara']:
+            rules_section += f"### Yara Rule ({rules['yara']['source']})\n```yara\n{rules['yara']['code']}\n```\n"
 
-> **Detected:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
-> **Reason:** {reason}
+    # Markdown 본문 조립
+    body = textwrap.dedent(f"""
+        # 🛡️ {cve_data['title_ko']}
 
-{badges}
-**CWE:** {cwe_str}
+        > **Detected:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
+        > **Reason:** {reason}
 
-## 📦 영향 받는 자산 (Affected Assets)
-| Vendor | Product | Versions |
-| :--- | :--- | :--- |
-{affected_rows}
+        {badges}
+        **CWE:** {cwe_str}
 
-## 🔍 취약점 분석 (Analysis)
-| 항목 | 내용 |
-| :--- | :--- |
-| **요약** | {ai_summary} |
-| **영향도** | {ai_impact} |
+        ## 📦 영향 받는 자산 (Affected Assets)
+        | Vendor | Product | Versions |
+        | :--- | :--- | :--- |
+        {affected_rows}
 
-### 🏹 공격 벡터 (Attack Vector)
-| 항목 | 내용 |
-| :--- | :--- |
-| **공식 벡터** | `{cve_data.get('cvss_vector', 'N/A')}` |
-| **상세 분석** | {vector_details} |
-| **AI 시나리오** | {ai_vector_analysis} |
+        ## 🔍 심층 분석 (Deep Analysis)
+        | 항목 | 내용 |
+        | :--- | :--- |
+        | **원인 (Root Cause)** | {analysis_result.get('root_cause', '-')} |
+        | **영향도 (Impact)** | {analysis_result.get('impact', '-')} |
 
-## 🛡️ 대응 방안 (Mitigation)
-{mitigation_list}
+        ### 🏹 공격 시나리오 (Kill Chain)
+        > {analysis_result.get('scenario', '정보 없음')}
 
-## 🔗 참고 자료 (References)
-{ref_list}
-"""
+        ### 🏹 공격 벡터 상세
+        | 항목 | 내용 |
+        | :--- | :--- |
+        | **공식 벡터** | `{cve_data.get('cvss_vector', 'N/A')}` |
+        | **상세 분석** | {vector_details} |
+
+        ## 🛡️ 대응 방안 (Mitigation)
+        {mitigation_list}
+
+        {rules_section}
+
+        ## 🔗 참고 자료 (References)
+        {ref_list}
+    """).strip()
 
     url = f"https://api.github.com/repos/{repo}/issues"
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
@@ -181,7 +171,7 @@ def create_github_issue(cve_data, reason):
     else: return None
 
 def main():
-    print(f"[*] Argus Phase 0 시작 (모델: {config.MODEL_PHASE_0})")
+    print(f"[*] Argus Phase 1 시작 (Model: {config.MODEL_PHASE_1})")
     collector, db, notifier = Collector(), ArgusDB(), SlackNotifier()
     collector.fetch_kev()
     target_cve_ids = collector.fetch_recent_cves(hours=2)
@@ -196,8 +186,6 @@ def main():
             if raw_data.get('state') != 'PUBLISHED': continue
             is_target, match_info = is_target_asset(raw_data['description'], cve_id)
             if not is_target: continue
-
-            clean_match_info = match_info.replace("All Assets (*)", "Global").replace("(*)", "").strip()
 
             current_state = {
                 "id": cve_id, "title": raw_data['title'], "cvss": raw_data['cvss'], "cvss_vector": raw_data['cvss_vector'],
@@ -230,6 +218,7 @@ def main():
                 
                 report_url = None
                 if is_high_risk:
+                    # [Phase 1] 고위험군: Rule 생성 및 심층 리포트
                     report_url = create_github_issue(current_state, alert_reason)
                 
                 notifier.send_alert(current_state, alert_reason, report_url)
