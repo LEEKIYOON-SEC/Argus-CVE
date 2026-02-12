@@ -14,7 +14,7 @@ import config
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# (CVSS_MAP, is_target_asset 등 기존 함수 생략 - Phase 0와 동일)
+# CVSS 매핑 (기존 유지)
 CVSS_MAP = {
     "AV:N": "네트워크 (Network)", "AV:A": "인접 (Adjacent)", "AV:L": "로컬 (Local)", "AV:P": "물리적 (Physical)",
     "AC:L": "낮음 (Low)", "AC:H": "높음 (High)",
@@ -112,7 +112,7 @@ def create_github_issue(cve_data, reason):
     ref_list = "\n".join([f"- {r}" for r in cve_data['references']])
     vector_details = parse_cvss_vector(cve_data.get('cvss_vector', 'N/A'))
 
-    # 룰 섹션 구성
+    # 룰 섹션 구성 (한글화)
     rules_section = ""
     if rules['sigma'] or rules['snort'] or rules['yara']:
         rules_section = "## 🛡️ 탐지 룰 (Detection Rules)\n"
@@ -123,44 +123,45 @@ def create_github_issue(cve_data, reason):
         if rules['yara']:
             rules_section += f"### Yara Rule ({rules['yara']['source']})\n```yara\n{rules['yara']['code']}\n```\n"
 
-    # Markdown 본문 조립
-    body = textwrap.dedent(f"""
-        # 🛡️ {cve_data['title_ko']}
+    # [중요] 마크다운 포맷팅 깨짐 방지를 위해 들여쓰기 제거
+    body = f"""# 🛡️ {cve_data['title_ko']}
 
-        > **Detected:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
-        > **Reason:** {reason}
+> **탐지 일시:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
+> **탐지 사유:** {reason}
 
-        {badges}
-        **CWE:** {cwe_str}
+{badges}
+**취약점 유형 (CWE):** {cwe_str}
 
-        ## 📦 영향 받는 자산 (Affected Assets)
-        | Vendor | Product | Versions |
-        | :--- | :--- | :--- |
-        {affected_rows}
+## 📦 영향 받는 자산
+| 벤더 (Vendor) | 제품 (Product) | 버전 (Versions) |
+| :--- | :--- | :--- |
+{affected_rows}
 
-        ## 🔍 심층 분석 (Deep Analysis)
-        | 항목 | 내용 |
-        | :--- | :--- |
-        | **원인 (Root Cause)** | {analysis_result.get('root_cause', '-')} |
-        | **영향도 (Impact)** | {analysis_result.get('impact', '-')} |
+## 🔍 심층 분석 (Deep Analysis)
+| 항목 | 내용 |
+| :--- | :--- |
+| **기술적 원인** | {analysis_result.get('root_cause', '-')} |
+| **비즈니스 영향** | {analysis_result.get('impact', '-')} |
 
-        ### 🏹 공격 시나리오 (Kill Chain)
-        > {analysis_result.get('scenario', '정보 없음')}
+### 🏹 공격 시나리오
+> {analysis_result.get('scenario', '정보 없음')}
 
-        ### 🏹 공격 벡터 상세
-        | 항목 | 내용 |
-        | :--- | :--- |
-        | **공식 벡터** | `{cve_data.get('cvss_vector', 'N/A')}` |
-        | **상세 분석** | {vector_details} |
+### 🏹 공격 벡터 상세
+| 항목 | 내용 |
+| :--- | :--- |
+| **공식 벡터** | `{cve_data.get('cvss_vector', 'N/A')}` |
+| **상세 분석** | {vector_details} |
 
-        ## 🛡️ 대응 방안 (Mitigation)
-        {mitigation_list}
+## 🛡️ 대응 방안
+{mitigation_list}
 
-        {rules_section}
+{rules_section}
 
-        ## 🔗 참고 자료 (References)
-        {ref_list}
-    """).strip()
+## 🔗 참고 자료
+{ref_list}
+"""
+    # 양쪽 공백 제거하여 포맷팅 안전 확보
+    body = body.strip()
 
     url = f"https://api.github.com/repos/{repo}/issues"
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
