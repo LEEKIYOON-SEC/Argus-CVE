@@ -14,7 +14,7 @@ import config
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# [수정] NVD CVSS v3.1 및 v4.0 표준 전체 매핑 (Environmental 포함)
+# [수정] NVD CVSS v3.1 및 v4.0 표준 전체 매핑 (Base, Threat, Env, Supp)
 CVSS_MAP = {
     # ==========================================
     # [CVSS 3.1 Base Metrics]
@@ -62,17 +62,12 @@ CVSS_MAP = {
     "SA:H": "후속시스템 가용성: 높음", "SA:L": "후속시스템 가용성: 낮음", "SA:N": "후속시스템 가용성: 없음",
 
     # ==========================================
-    # [CVSS 4.0 Environmental (Modified Base) Metrics] - 사용자 요청 반영
+    # [CVSS 4.0 Environmental (Modified Base) Metrics]
     # ==========================================
-    # Modified Attack Requirements (MAT)
     "MAT:N": "수정된 공격 기술: 없음", "MAT:P": "수정된 공격 기술: 존재",
-    
-    # Modified Vuln System Impact (MVC, MVI, MVA)
     "MVC:H": "수정된 취약시스템 기밀성: 높음", "MVC:L": "수정된 취약시스템 기밀성: 낮음", "MVC:N": "수정된 취약시스템 기밀성: 없음",
     "MVI:H": "수정된 취약시스템 무결성: 높음", "MVI:L": "수정된 취약시스템 무결성: 낮음", "MVI:N": "수정된 취약시스템 무결성: 없음",
     "MVA:H": "수정된 취약시스템 가용성: 높음", "MVA:L": "수정된 취약시스템 가용성: 낮음", "MVA:N": "수정된 취약시스템 가용성: 없음",
-
-    # Modified Subsequent System Impact (MSC, MSI, MSA)
     "MSC:H": "수정된 후속시스템 기밀성: 높음", "MSC:L": "수정된 후속시스템 기밀성: 낮음", "MSC:N": "수정된 후속시스템 기밀성: 없음", "MSC:S": "수정된 후속시스템 기밀성: 안전(Safety)",
     "MSI:H": "수정된 후속시스템 무결성: 높음", "MSI:L": "수정된 후속시스템 무결성: 낮음", "MSI:N": "수정된 후속시스템 무결성: 없음", "MSI:S": "수정된 후속시스템 무결성: 안전(Safety)",
     "MSA:H": "수정된 후속시스템 가용성: 높음", "MSA:L": "수정된 후속시스템 가용성: 낮음", "MSA:N": "수정된 후속시스템 가용성: 없음", "MSA:S": "수정된 후속시스템 가용성: 안전(Safety)",
@@ -128,14 +123,11 @@ def parse_cvss_vector(vector_str):
         if ':' in part:
             key, val = part.split(':')
             full_key = f"{key}:{val}"
-            # 매핑 테이블에 전체 키(예: AV:N)가 있으면 그거 쓰고, 없으면 값만 영문으로 표시
             desc = CVSS_MAP.get(full_key, f"{key}:{val}")
             
-            # 매핑된 텍스트가 있으면 그대로 사용
             if full_key in CVSS_MAP:
                 mapped_parts.append(f"• {desc}")
             else:
-                # 굵은 글씨 효과를 위해 키와 값 분리 (매핑 안 된 경우)
                 mapped_parts.append(f"• **{key}**: {val}")
     
     return "<br>".join(mapped_parts)
@@ -263,15 +255,22 @@ def main():
             should_alert, alert_reason = False, ""
             
             is_high_risk = False
+            # 현재 상태가 고위험인지 판단 (7.0 이상 or KEV)
             if current_state['cvss'] >= 7.0 or current_state['is_kev']: is_high_risk = True
             
             if last_record is None:
                 should_alert, alert_reason = True, f"신규 취약점"
             else:
+                # [로직 추가] 기존 상태 비교
+                # 1. KEV 등재 시
                 if current_state['is_kev'] and not last_state.get('is_kev'):
                     should_alert, alert_reason, is_high_risk = True, "🚨 KEV 등재", True
+                # 2. EPSS 급증 시
                 elif current_state['epss'] >= 0.1 and (current_state['epss'] - last_state.get('epss', 0)) > 0.05:
                     should_alert, alert_reason, is_high_risk = True, "📈 EPSS 급증", True
+                # 3. [NEW] CVSS 점수가 상향되어 고위험군(7.0 이상)으로 진입 시 (기존에는 7.0 미만이었는데)
+                elif current_state['cvss'] >= 7.0 and last_state.get('cvss', 0) < 7.0:
+                    should_alert, alert_reason, is_high_risk = True, "🔺 CVSS 위험도 상향 (High)", True
 
             if should_alert:
                 print(f"[!] 알림 발송: {cve_id} (HighRisk: {is_high_risk})")

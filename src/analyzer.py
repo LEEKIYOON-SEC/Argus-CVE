@@ -48,7 +48,6 @@ class Analyzer:
                 temperature=config.GROQ_PARAMS["temperature"],
                 top_p=config.GROQ_PARAMS["top_p"],
                 max_completion_tokens=config.GROQ_PARAMS["max_completion_tokens"],
-                # [수정] 고추론 모델 사용 (사용자 요청 고정)
                 reasoning_effort=config.GROQ_PARAMS["reasoning_effort"], 
                 response_format=config.GROQ_PARAMS["response_format"]
             )
