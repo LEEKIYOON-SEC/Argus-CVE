@@ -226,7 +226,7 @@ def create_github_issue(cve_data: Dict, reason: str) -> Tuple[Optional[str], Opt
         # Step 3: 공식 룰 존재 여부 확인
         has_official = any([
             rules.get('sigma') and rules['sigma'].get('verified'),
-            rules.get('snort') and rules['snort'].get('verified'),
+            any(r.get('verified') for r in rules.get('network', [])),  # network는 리스트!
             rules.get('yara') and rules['yara'].get('verified')
         ])
         
@@ -304,17 +304,30 @@ def _build_issue_body(cve_data: Dict, reason: str, analysis: Dict, rules: Dict, 
     
     # 룰 섹션
     rules_section = ""
-    if rules['sigma'] or rules['snort'] or rules['yara']:
+    has_any_rules = rules.get('sigma') or rules.get('network') or rules.get('yara')
+    
+    if has_any_rules:
         rules_section = "## 🛡️ 탐지 룰 (Detection Rules)\n\n"
         
         if not has_official:
             rules_section += "> ⚠️ **주의:** AI 생성 룰은 실제 배포 전 보안 전문가의 검토가 필요합니다.\n\n"
         
-        for rule_type in ['sigma', 'snort', 'yara']:
-            if rules[rule_type]:
-                badge = "🟢 **공식 검증**" if rules[rule_type].get('verified') else "🔶 **AI 생성 - 검토 필요**"
-                code_lang = {"sigma": "yaml", "snort": "bash", "yara": "yara"}[rule_type]
-                rules_section += f"### {rule_type.capitalize()} Rule ({rules[rule_type]['source']}) {badge}\n```{code_lang}\n{rules[rule_type]['code']}\n```\n\n"
+        # Sigma 룰
+        if rules.get('sigma'):
+            badge = "🟢 **공식 검증**" if rules['sigma'].get('verified') else "🔶 **AI 생성 - 검토 필요**"
+            rules_section += f"### Sigma Rule ({rules['sigma']['source']}) {badge}\n```yaml\n{rules['sigma']['code']}\n```\n\n"
+        
+        # 네트워크 룰 (Snort/Suricata - 여러 개 가능)
+        if rules.get('network'):
+            for idx, net_rule in enumerate(rules['network'], 1):
+                badge = "🟢 **공식 검증**" if net_rule.get('verified') else "🔶 **AI 생성 - 검토 필요**"
+                engine_name = net_rule.get('engine', 'unknown').upper()
+                rules_section += f"### Network Rule #{idx} ({net_rule['source']} - {engine_name}) {badge}\n```bash\n{net_rule['code']}\n```\n\n"
+        
+        # Yara 룰
+        if rules.get('yara'):
+            badge = "🟢 **공식 검증**" if rules['yara'].get('verified') else "🔶 **AI 생성 - 검토 필요**"
+            rules_section += f"### Yara Rule ({rules['yara']['source']}) {badge}\n```yara\n{rules['yara']['code']}\n```\n\n"
     
     now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S (KST)')
     
@@ -377,10 +390,20 @@ def update_github_issue_with_official_rules(issue_url: str, cve_id: str, rules: 
 
 """
     
-    for rule_type in ['sigma', 'snort', 'yara']:
-        if rules.get(rule_type) and rules[rule_type].get('verified'):
-            code_lang = {"sigma": "yaml", "snort": "bash", "yara": "yara"}[rule_type]
-            comment += f"### {rule_type.capitalize()} Rule ({rules[rule_type]['source']})\n```{code_lang}\n{rules[rule_type]['code']}\n```\n\n"
+    # Sigma
+    if rules.get('sigma') and rules['sigma'].get('verified'):
+        comment += f"### Sigma Rule ({rules['sigma']['source']})\n```yaml\n{rules['sigma']['code']}\n```\n\n"
+    
+    # Network (여러 개 가능)
+    if rules.get('network'):
+        for idx, net_rule in enumerate(rules['network'], 1):
+            if net_rule.get('verified'):
+                engine = net_rule.get('engine', 'unknown').upper()
+                comment += f"### Network Rule #{idx} ({net_rule['source']} - {engine})\n```bash\n{net_rule['code']}\n```\n\n"
+    
+    # Yara
+    if rules.get('yara') and rules['yara'].get('verified'):
+        comment += f"### Yara Rule ({rules['yara']['source']})\n```yara\n{rules['yara']['code']}\n```\n\n"
     
     notifier = SlackNotifier()
     return notifier.update_github_issue(issue_url, comment)
@@ -596,7 +619,7 @@ def check_for_official_rules() -> None:
                 # 공식 룰 존재 확인
                 has_official = any([
                     rules.get('sigma') and rules['sigma'].get('verified'),
-                    rules.get('snort') and rules['snort'].get('verified'),
+                    any(r.get('verified') for r in rules.get('network', [])),  # network는 리스트!
                     rules.get('yara') and rules['yara'].get('verified')
                 ])
                 

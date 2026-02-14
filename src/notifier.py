@@ -161,9 +161,21 @@ class SlackNotifier:
             
             # 발견된 공식 룰 표시
             rule_text = "*🛡️ 발견된 공식 룰:*\n"
-            for rule_type in ['sigma', 'snort', 'yara']:
-                if rules_info.get(rule_type) and rules_info[rule_type].get('verified'):
-                    rule_text += f"• {rule_type.capitalize()}: {rules_info[rule_type]['source']}\n"
+            
+            # Sigma
+            if rules_info.get('sigma') and rules_info['sigma'].get('verified'):
+                rule_text += f"• Sigma: {rules_info['sigma']['source']}\n"
+            
+            # Network (여러 개 가능)
+            if rules_info.get('network'):
+                for net_rule in rules_info['network']:
+                    if net_rule.get('verified'):
+                        engine = net_rule.get('engine', 'unknown').upper()
+                        rule_text += f"• Network ({engine}): {net_rule['source']}\n"
+            
+            # Yara
+            if rules_info.get('yara') and rules_info['yara'].get('verified'):
+                rule_text += f"• Yara: {rules_info['yara']['source']}\n"
             
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": rule_text}})
             
