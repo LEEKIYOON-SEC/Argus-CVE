@@ -49,10 +49,10 @@ class ArgusConfig:
     # [2] Docker 설정 (현재 비활성화)
     # ==========================================
     #DOCKER_CONFIG = {
-        #"enabled": False,  # GitHub Actions에서 Docker 이미지 없으므로 비활성화
-        #"snort_image": "snort/snort3",  # 향후 사용 시를 위한 설정
-        #"timeout": 20
-    }
+    #    "enabled": False,  # GitHub Actions에서 Docker 이미지 없으므로 비활성화
+    #    "snort_image": "snort/snort3",  # 향후 사용 시를 위한 설정
+    #    "timeout": 20
+    #}
     
     # ==========================================
     # [3] API Rate Limit 설정
