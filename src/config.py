@@ -48,11 +48,11 @@ class ArgusConfig:
     # ==========================================
     # [2] Docker 설정 (현재 비활성화)
     # ==========================================
-    #DOCKER_CONFIG = {
-    #    "enabled": False,  # GitHub Actions에서 Docker 이미지 없으므로 비활성화
-    #    "snort_image": "snort/snort3",  # 향후 사용 시를 위한 설정
-    #    "timeout": 20
-    #}
+    DOCKER_CONFIG = {
+        "enabled": False,  # GitHub Actions에서 Docker 이미지 없으므로 비활성화
+        "snort_image": "snort/snort3",  # 향후 사용 시를 위한 설정
+        "timeout": 20
+    }
     
     # ==========================================
     # [3] API Rate Limit 설정
@@ -164,13 +164,16 @@ GitHub Actions Secrets에 다음 변수들을 추가해주세요.
         """
         시스템 헬스체크
         
+        Docker는 사용하지 않으므로 체크에서 제외합니다.
+        필수 컴포넌트만 체크합니다.
+        
         Returns:
             각 컴포넌트의 상태 (True: 정상, False: 문제 있음)
         """
         health = {
             "environment": True,
-            "assets_loaded": bool(self.target_assets),
-            "docker_available": False  # 현재 비활성화 상태
+            "assets_loaded": bool(self.target_assets)
+            # docker_available 제거 - Docker를 사용하지 않으므로
         }
         
         # 환경 변수 재확인
