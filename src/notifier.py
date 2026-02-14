@@ -93,7 +93,7 @@ class SlackNotifier:
             ref_text = ""
             if cve_data.get('references'):
                 links = cve_data['references'][:3]
-                ref_text = "\n\n*🔗 References:*\n" + "\n".join([f"• <{r}|{r}>" for r in links])
+                ref_text = "\n\n*🔗 References:*\n• " + "\n• ".join([f"<{r}>" for r in links])
 
             # Slack 블록 구성
             blocks = [

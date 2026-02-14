@@ -448,7 +448,7 @@ class RuleManager:
     # [3] AI 룰 생성
     # ====================================================================
     
-    def _check_observables(self, cve_data: Dict) -> Tuple[bool, str]:
+    def _check_observables(self, cve_data: Dict) -> Tuple[bool, str, List[str]]:
         """
         Observable Gate: 구체적 지표 확인
         
@@ -457,57 +457,91 @@ class RuleManager:
         왜 필요한가요?
         - "원격 코드 실행 취약점"이라는 설명만으로는 룰을 만들 수 없어요
         - 하지만 "GET /admin.php?cmd=" 같은 구체적 패턴이 있으면 가능합니다
+        
+        Returns:
+            (통과 여부, 이유 설명, 발견된 지표 목록)
         """
         desc = cve_data['description'].lower()
         
         indicators = []
+        indicator_details = []  # 구체적 정보 포함
         
         # 파일 경로
         if '/' in cve_data['description']:
             indicators.append("파일 경로")
+            # 실제 경로 추출 시도
+            paths = re.findall(r'/[a-zA-Z0-9_\-/\.]+', cve_data['description'])
+            if paths:
+                indicator_details.append(f"파일 경로 ({paths[0]})")
+            else:
+                indicator_details.append("파일 경로")
         
         # 웹 파일
         web_files = ['.php', '.jsp', '.asp', '.cgi']
-        if any(ext in desc for ext in web_files):
-            indicators.append("웹 파일")
+        for ext in web_files:
+            if ext in desc:
+                indicators.append("웹 파일")
+                indicator_details.append(f"웹 파일 ({ext})")
+                break
         
         # URL 파라미터
         if 'parameter' in desc or 'param=' in desc or '?' in cve_data['description']:
             indicators.append("URL 파라미터")
+            # 실제 파라미터 추출 시도
+            params = re.findall(r'\b\w+\s*=', cve_data['description'])
+            if params:
+                indicator_details.append(f"URL 파라미터 ({params[0]})")
+            else:
+                indicator_details.append("URL 파라미터")
         
         # HTTP 헤더
         if ('header' in desc and ('http' in desc or 'user-agent' in desc)):
             indicators.append("HTTP 헤더")
+            indicator_details.append("HTTP 헤더")
         
         # Hex 값
-        if re.search(r'0x[0-9a-f]{2,}', desc):
+        hex_match = re.search(r'0x[0-9a-f]{2,}', desc)
+        if hex_match:
             indicators.append("Hex 값")
+            indicator_details.append(f"Hex 값 ({hex_match.group()})")
         
         # 레지스트리
         if 'registry' in desc and 'hk' in desc:
             indicators.append("레지스트리")
+            indicator_details.append("레지스트리 키")
         
         # 포트
-        if re.search(r'port\s+\d+', desc):
+        port_match = re.search(r'port\s+(\d+)', desc)
+        if port_match:
             indicators.append("포트 번호")
+            indicator_details.append(f"포트 ({port_match.group(1)})")
         
-        has_enough = len(indicators) >= 2  # 최소 2개 필요
-        reason = f"발견된 지표: {', '.join(indicators)}" if indicators else "구체적 지표 부족"
+        # 완화된 기준: 최소 1개 지표
+        has_enough = len(indicators) >= 1  # 2개 → 1개로 완화
         
-        return has_enough, reason
+        if has_enough:
+            reason = f"발견된 지표: {', '.join(indicator_details)}"
+        else:
+            reason = "구체적 지표 부족"
+        
+        return has_enough, reason, indicator_details
     
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-    def _generate_ai_rule(self, rule_type: str, cve_data: Dict) -> Optional[str]:
+    def _generate_ai_rule(self, rule_type: str, cve_data: Dict) -> Optional[Tuple[str, List[str]]]:
         """
         AI 기반 탐지 룰 생성
         
         공개 룰이 없고, 구체적 지표가 충분할 때만 AI에게 룰을 생성하도록 요청합니다.
+        
+        Returns:
+            (룰 코드, 발견된 지표 목록) 또는 None
         """
         logger.debug(f"AI {rule_type} 생성 시도")
         
         # Observable Gate (Sigma는 예외 - 로그 기반이라 관대하게)
+        indicator_details = []
         if rule_type not in ["Sigma", "sigma"]:
-            has_indicators, reason = self._check_observables(cve_data)
+            has_indicators, reason, indicator_details = self._check_observables(cve_data)
             if not has_indicators:
                 logger.info(f"⛔ {rule_type} 생성 SKIP: {reason}")
                 return None
@@ -544,7 +578,7 @@ class RuleManager:
             
             if is_valid:
                 logger.info(f"✅ AI {rule_type} 생성 및 검증 성공")
-                return content
+                return (content, indicator_details)  # 지표 정보 포함
             else:
                 logger.warning(f"❌ AI {rule_type} 검증 실패")
                 logger.debug(f"실패한 룰:\n{content}")
@@ -658,15 +692,18 @@ level: high
             rules['sigma'] = {
                 "code": public_sigma,
                 "source": "Public (SigmaHQ)",
-                "verified": True
+                "verified": True,
+                "indicators": None  # 공개 룰은 지표 정보 없음
             }
         else:
-            ai_sigma = self._generate_ai_rule("Sigma", cve_data)
-            if ai_sigma:
+            ai_result = self._generate_ai_rule("Sigma", cve_data)
+            if ai_result:
+                ai_sigma, indicators = ai_result
                 rules['sigma'] = {
                     "code": f"# ⚠️ AI-Generated - Review Required\n{ai_sigma}",
                     "source": "AI Generated (Validated)",
-                    "verified": False
+                    "verified": False,
+                    "indicators": indicators  # 지표 정보 포함
                 }
         
         # ===== 네트워크 룰 (Snort + Suricata) =====
@@ -680,17 +717,20 @@ level: high
                     "code": rule_info["code"],
                     "source": f"Public ({rule_info['source']})",
                     "engine": rule_info["engine"],
-                    "verified": True
+                    "verified": True,
+                    "indicators": None  # 공개 룰은 지표 정보 없음
                 })
         elif feasibility:
             # 공개 룰이 없고 feasibility가 true면 AI 생성
-            ai_network = self._generate_ai_rule("Snort", cve_data)
-            if ai_network:
+            ai_result = self._generate_ai_rule("Snort", cve_data)
+            if ai_result:
+                ai_network, indicators = ai_result
                 rules['network'].append({
                     "code": f"# ⚠️ AI-Generated - Review Required\n{ai_network}",
                     "source": "AI Generated (Regex Validated)",
                     "engine": "generic",
-                    "verified": False
+                    "verified": False,
+                    "indicators": indicators  # 지표 정보 포함
                 })
         
         # ===== Yara =====
@@ -699,15 +739,18 @@ level: high
             rules['yara'] = {
                 "code": public_yara,
                 "source": "Public (Yara-Rules)",
-                "verified": True
+                "verified": True,
+                "indicators": None  # 공개 룰은 지표 정보 없음
             }
         elif feasibility:
-            ai_yara = self._generate_ai_rule("Yara", cve_data)
-            if ai_yara:
+            ai_result = self._generate_ai_rule("Yara", cve_data)
+            if ai_result:
+                ai_yara, indicators = ai_result
                 rules['yara'] = {
                     "code": f"// ⚠️ AI-Generated - Review Required\n{ai_yara}",
                     "source": "AI Generated (Compiled)",
-                    "verified": False
+                    "verified": False,
+                    "indicators": indicators  # 지표 정보 포함
                 }
         
         # 결과 요약
